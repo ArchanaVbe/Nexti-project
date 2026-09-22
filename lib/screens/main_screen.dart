@@ -1,4 +1,8 @@
 import 'package:flutter/material.dart';
+import 'explore_screen.dart';
+import 'saved_trips_screen.dart';
+import 'itinerary_screen.dart';
+import 'profile_screen.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -13,10 +17,10 @@ class _MainScreenState extends State<MainScreen> {
   // Using IndexedStack allows preserving state of individual pages
   // without rebuilding them unnecessarily when switching tabs.
   final List<Widget> _pages = const [
-    Center(child: Text('Explore Placeholder')),
-    Center(child: Text('Saved Trips Placeholder')),
-    Center(child: Text('Itinerary Placeholder')),
-    Center(child: Text('Profile Placeholder')),
+    ExploreScreen(),
+    SavedTripsScreen(),
+    ItineraryScreen(),
+    ProfileScreen(),
   ];
 
   @override
