@@ -15,6 +15,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
   double _agreeableness = 0.5;
   double _neuroticism = 0.5;
 
+  // POI Category Preferences (will be normalized to sum to 1)
+  double _prefAdventure = 0.5;
+  double _prefCultural = 0.5;
+  double _prefNature = 0.5;
+  double _prefRelaxation = 0.5;
+  double _prefFood = 0.5;
+  double _prefShopping = 0.5;
+  double _prefHistorical = 0.5;
+
   final TextEditingController _budgetController = TextEditingController();
 
   @override
@@ -80,6 +89,33 @@ class _ProfileScreenState extends State<ProfileScreen> {
               decoration: const InputDecoration(
                 labelText: 'Individual Budget (\$)',
                 prefixIcon: Icon(Icons.attach_money),
+              ),
+            ),
+            const SizedBox(height: 24),
+            Text(
+              'Travel Preferences',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Rate how much you enjoy each activity type. These will be used to personalize your itinerary.',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 16),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  children: [
+                    _buildTraitSlider('Adventure', _prefAdventure, (val) => setState(() => _prefAdventure = val)),
+                    _buildTraitSlider('Cultural', _prefCultural, (val) => setState(() => _prefCultural = val)),
+                    _buildTraitSlider('Nature', _prefNature, (val) => setState(() => _prefNature = val)),
+                    _buildTraitSlider('Relaxation', _prefRelaxation, (val) => setState(() => _prefRelaxation = val)),
+                    _buildTraitSlider('Food & Dining', _prefFood, (val) => setState(() => _prefFood = val)),
+                    _buildTraitSlider('Shopping', _prefShopping, (val) => setState(() => _prefShopping = val)),
+                    _buildTraitSlider('Historical', _prefHistorical, (val) => setState(() => _prefHistorical = val)),
+                  ],
+                ),
               ),
             ),
             const SizedBox(height: 32),
