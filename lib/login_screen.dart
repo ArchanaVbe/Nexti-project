@@ -111,7 +111,7 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // 3. Forgot Password Handler
+  // 3. Updated Forgot Password Handler
   void _handleForgotPassword() {
     final resetController = TextEditingController(text: _emailController.text.trim());
 
@@ -151,14 +151,29 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
             onPressed: () async {
               final email = resetController.text.trim();
+
+              if (email.isEmpty || !email.contains('@') || !email.contains('.')) {
+                _showErrorSnackBar('Please enter a valid email address.');
+                return;
+              }
+
               Navigator.pop(ctx);
-              if (email.isNotEmpty) {
-                try {
-                  await _auth.sendPasswordResetEmail(email: email);
-                  _showSuccessSnackBar('Password reset email sent.');
-                } catch (e) {
-                  _showErrorSnackBar('Failed to send reset email: $e');
+
+              try {
+                await _auth.sendPasswordResetEmail(email: email);
+                _showSuccessSnackBar('Password reset link sent! Check your inbox and spam folder.');
+              } on FirebaseAuthException catch (e) {
+                String errorMsg = 'Failed to send reset email.';
+                if (e.code == 'user-not-found') {
+                  errorMsg = 'No user found with this email address.';
+                } else if (e.code == 'invalid-email') {
+                  errorMsg = 'Invalid email address format.';
+                } else {
+                  errorMsg = e.message ?? errorMsg;
                 }
+                _showErrorSnackBar(errorMsg);
+              } catch (e) {
+                _showErrorSnackBar('An error occurred. Please try again.');
               }
             },
             child: const Text('Send Link'),
