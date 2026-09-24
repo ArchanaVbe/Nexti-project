@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "353650244505",
+    "project_id": "nextripia-3e2bc",
+    "storage_bucket": "nextripia-3e2bc.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:353650244505:android:4efb50b3ad391fa4933108",
+        "android_client_info": {
+          "package_name": "com.example.nexti_project"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDDZyjRf6-eCvojb9ZyCxGXMdzz03cOlyk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
