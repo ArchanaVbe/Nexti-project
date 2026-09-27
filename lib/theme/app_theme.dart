@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 class AppTheme {
-  static const Color _seedColor = Color(0xFF007A87); // Deep Teal / Oceanic Cyan
+  static const Color _seedColor = Color(0xFF6366F1); // Indigo / Purple brand color
 
   static ThemeData get lightTheme {
     return _buildTheme(Brightness.light);
@@ -20,17 +20,31 @@ class AppTheme {
     return ThemeData(
       colorScheme: colorScheme,
       useMaterial3: true,
+      textSelectionTheme: const TextSelectionThemeData(
+        cursorColor: Color(0xFF6366F1),
+        selectionColor: Color(0xFFC7D2FE),
+        selectionHandleColor: Color(0xFF6366F1),
+      ),
       inputDecorationTheme: InputDecorationTheme(
+        labelStyle: const TextStyle(
+          color: Color(0xFF334155),
+          fontWeight: FontWeight.w600,
+        ),
+        hintStyle: const TextStyle(
+          color: Color(0xFF64748B),
+          fontWeight: FontWeight.w500,
+        ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16.0),
+          borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16.0),
-          borderSide: BorderSide(color: colorScheme.outline),
+          borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16.0),
-          borderSide: BorderSide(color: colorScheme.primary, width: 2.0),
+          borderSide: const BorderSide(color: Color(0xFF6366F1), width: 2.0),
         ),
         errorBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16.0),

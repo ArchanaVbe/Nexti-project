@@ -1,17 +1,13 @@
 import 'package:flutter/material.dart';
+import 'screens/main_screen.dart';
+
+export 'screens/main_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('NextTripia AI - Home'),
-      ),
-      body: const Center(
-        child: Text('Home Screen (Friend Area)'),
-      ),
-    );
+    return const MainScreen();
   }
 }
