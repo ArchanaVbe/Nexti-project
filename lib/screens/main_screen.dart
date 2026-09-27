@@ -64,7 +64,7 @@ class _MainScreenState extends State<MainScreen> {
   Widget build(BuildContext context) {
     final List<Widget> pages = [
       HomeTabScreen(onNavigateTab: _onNavigateTab),
-      const TripsScreen(),
+      TripsScreen(key: UniqueKey()),
       const ExploreScreen(),
       const ProfileScreen(),
     ];

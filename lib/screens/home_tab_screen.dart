@@ -10,11 +10,14 @@ class HomeTabScreen extends StatelessWidget {
     this.onNavigateTab,
   });
 
-  void _navigateToCreateTrip(BuildContext context) {
-    Navigator.push(
+  void _navigateToCreateTrip(BuildContext context) async {
+    final result = await Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => const CreateTripScreen()),
     );
+    if (result == true) {
+      onNavigateTab?.call(1);
+    }
   }
 
 

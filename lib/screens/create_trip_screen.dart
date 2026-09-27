@@ -1,4 +1,8 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:http/http.dart' as http;
 
 class CreateTripScreen extends StatefulWidget {
   const CreateTripScreen({super.key});
@@ -15,6 +19,10 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
   int _currentStep = 1;
   final List<String> _selectedPlaces = [];
+  Map<String, List<String>> _suggestedPlaces = {};
+  bool _isLoadingPlaces = false;
+  String _lastFetchedDestination = '';
+  
   // ignore: prefer_final_fields
   bool _isHost = true; // Set to true by default for testing, friend can toggle this
 
@@ -27,37 +35,64 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     super.dispose();
   }
 
-  Map<String, List<String>> _getSuggestedPlaces(String destination) {
-    String dest = destination.toLowerCase().trim();
-    if (dest == 'hampi') {
-      return {
-        'Adventure': ['Matanga Hill Trek', 'Coracle Ride', 'Bouldering at Hemakuta'],
-        'Nature': ['Tungabhadra River', 'Sanapur Lake', 'Anjaneya Hill'],
-        'Heritage': ['Virupaksha Temple', 'Vitthala Temple', 'Lotus Mahal', 'Elephant Stables'],
-        'Shopping': ['Hampi Bazaar', 'Hippie Island Markets']
-      };
-    } else if (dest == 'mysuru' || dest == 'mysore') {
-      return {
-        'Adventure': ['Chamundi Hill Steps', 'KRS Dam Cycling'],
-        'Nature': ['Brindavan Gardens', 'Karanji Lake', 'Ranganathittu Bird Sanctuary'],
-        'Heritage': ['Mysore Palace', 'Chamundeshwari Temple', 'Jaganmohan Palace'],
-        'Shopping': ['Devaraja Market', 'Cauvery Emporium', 'Silk Factory']
-      };
-    } else if (dest == 'gokarna') {
-      return {
-        'Adventure': ['Beach Trekking', 'Surfing', 'Banana Boat Ride'],
-        'Nature': ['Om Beach', 'Half Moon Beach', 'Paradise Beach'],
-        'Heritage': ['Mahabaleshwar Temple', 'Mirjan Fort'],
-        'Shopping': ['Flea Market', 'Car Street Shops']
-      };
-    }
-    // Default fallback
-    return {
-      'Adventure': ['Mountain Trek', 'River Rafting', 'Rock Climbing'],
-      'Nature': ['Botanical Garden', 'Sunset Point', 'Lake View'],
-      'Heritage': ['Historic Fort', 'Ancient Temple', 'Old City Walk'],
-      'Shopping': ['Local Market', 'Handicraft Street']
+  Future<void> _fetchPlacesFromGoogle(String destination) async {
+    if (destination == _lastFetchedDestination && _suggestedPlaces.isNotEmpty) return;
+    
+    setState(() {
+      _isLoadingPlaces = true;
+      _suggestedPlaces = {};
+    });
+
+    const apiKey = 'AIzaSyAE54ZyUoFHQ5JnJvaQBo15RjmxCS5v_ko';
+    
+    final categories = {
+      'Adventure': 'adventure activities in $destination',
+      'Nature': 'nature spots and parks in $destination',
+      'Heritage': 'heritage sites and historical places in $destination',
+      'Shopping': 'shopping markets and malls in $destination'
     };
+
+    Map<String, List<String>> fetchedPlaces = {};
+
+    for (var entry in categories.entries) {
+      final categoryName = entry.key;
+      final query = Uri.encodeComponent(entry.value);
+      final url = 'https://maps.googleapis.com/maps/api/place/textsearch/json?query=$query&key=$apiKey';
+      
+      try {
+        final response = await http.get(Uri.parse(url));
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          final results = data['results'] as List;
+          
+          List<String> places = [];
+          for (var i = 0; i < results.length && i < 6; i++) { // Get top 6 places for each category
+            places.add(results[i]['name'] as String);
+          }
+          fetchedPlaces[categoryName] = places;
+        }
+      } catch (e) {
+        debugPrint('Error fetching $categoryName places: $e');
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        // Fallback if API fails or returns no results
+        if (fetchedPlaces.isEmpty || fetchedPlaces.values.every((list) => list.isEmpty)) {
+          _suggestedPlaces = {
+            'Adventure': ['Mountain Trek', 'River Rafting', 'Rock Climbing'],
+            'Nature': ['Botanical Garden', 'Sunset Point', 'Lake View'],
+            'Heritage': ['Historic Fort', 'Ancient Temple', 'Old City Walk'],
+            'Shopping': ['Local Market', 'Handicraft Street']
+          };
+        } else {
+          _suggestedPlaces = fetchedPlaces;
+        }
+        _lastFetchedDestination = destination;
+        _isLoadingPlaces = false;
+      });
+    }
   }
 
   Widget _buildStepIndicator(String label, String number, bool isActive) {
@@ -237,7 +272,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   }
 
   Widget _buildStep2() {
-    final suggestedPlaces = _getSuggestedPlaces(_destinationController.text);
+    final suggestedPlaces = _suggestedPlaces;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -255,8 +290,22 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           style: TextStyle(fontSize: 14, color: Color(0xFF64748B)),
         ),
         const SizedBox(height: 24),
-        ...suggestedPlaces.entries.map((category) {
-          return Column(
+        if (_isLoadingPlaces)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(32.0),
+              child: Column(
+                children: [
+                  CircularProgressIndicator(color: Color(0xFF6366F1)),
+                  SizedBox(height: 16),
+                  Text('Discovering real places from Google Maps...', style: TextStyle(color: Color(0xFF64748B))),
+                ],
+              ),
+            ),
+          )
+        else
+          ...suggestedPlaces.entries.map((category) {
+            return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
@@ -365,6 +414,95 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     );
   }
 
+  Widget _buildStep4() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Show trip',
+          style: TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            color: Color(0xFF0F172A),
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Here is your finalized plan.',
+          style: TextStyle(fontSize: 14, color: Color(0xFF64748B)),
+        ),
+        const SizedBox(height: 32),
+        // Trip details summary
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Destination: ${_destinationController.text}',
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Dates: ${_startDateController.text} - ${_endDateController.text}',
+                style: const TextStyle(fontSize: 14, color: Color(0xFF475569)),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Group Size: ${_groupSizeController.text}',
+                style: const TextStyle(fontSize: 14, color: Color(0xFF475569)),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Selected Places:',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _selectedPlaces.map((place) => Chip(
+                  label: Text(place, style: const TextStyle(fontSize: 12)),
+                  backgroundColor: const Color(0xFFF1F5F9),
+                  side: BorderSide.none,
+                )).toList(),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
+        // Google Map Placeholder
+        Container(
+          width: double.infinity,
+          height: 250,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(15),
+            child: const GoogleMap(
+              initialCameraPosition: CameraPosition(
+                target: LatLng(15.3173, 75.7139), // Coordinates for Karnataka
+                zoom: 6,
+              ),
+              mapType: MapType.normal,
+              myLocationButtonEnabled: false,
+              zoomControlsEnabled: false,
+            ),
+          ),
+        ),
+        const SizedBox(height: 40),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -431,7 +569,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                             margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
                           ),
                         ),
-                        _buildStepIndicator('Review', '4', _currentStep >= 4),
+                        _buildStepIndicator('Show trip', '4', _currentStep >= 4),
                       ],
                     ),
                     const SizedBox(height: 32),
@@ -439,7 +577,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                     if (_currentStep == 1) _buildStep1(),
                     if (_currentStep == 2) _buildStep2(),
                     if (_currentStep == 3) _buildStep3(),
-                    if (_currentStep == 4) const Center(child: Text("Review Section - Coming next")),
+                    if (_currentStep == 4) _buildStep4(),
                   ],
                 ),
               ),
@@ -462,11 +600,40 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                 width: double.infinity,
                 height: 56,
                 child: ElevatedButton(
-                  onPressed: () {
+                  onPressed: () async {
                     if (_currentStep < 4) {
+                      if (_currentStep == 1 && _destinationController.text.isNotEmpty) {
+                        _fetchPlacesFromGoogle(_destinationController.text);
+                      }
                       setState(() {
                         _currentStep++;
                       });
+                    } else {
+                      // Save Trip
+                      final prefs = await SharedPreferences.getInstance();
+                      List<String> savedTrips = prefs.getStringList('saved_trips') ?? [];
+                      
+                      final tripData = {
+                        'id': DateTime.now().millisecondsSinceEpoch.toString(),
+                        'destination': _destinationController.text,
+                        'startDate': _startDateController.text,
+                        'endDate': _endDateController.text,
+                        'groupSize': _groupSizeController.text,
+                        'places': _selectedPlaces,
+                      };
+                      
+                      savedTrips.add(jsonEncode(tripData));
+                      await prefs.setStringList('saved_trips', savedTrips);
+                      
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Trip Saved Successfully!'),
+                            backgroundColor: Colors.green,
+                          ),
+                        );
+                        Navigator.pop(context, true);
+                      }
                     }
                   },
                   style: ElevatedButton.styleFrom(
@@ -476,19 +643,23 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                     ),
                     elevation: 0,
                   ),
-                  child: const Row(
+                  child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Text(
-                        'Next',
-                        style: TextStyle(
+                        _currentStep == 4 ? 'Save Trip' : 'Next',
+                        style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
                           color: Colors.white,
                         ),
                       ),
-                      SizedBox(width: 8),
-                      Icon(Icons.arrow_forward, color: Colors.white, size: 20),
+                      const SizedBox(width: 8),
+                      Icon(
+                        _currentStep == 4 ? Icons.check : Icons.arrow_forward, 
+                        color: Colors.white, 
+                        size: 20
+                      ),
                     ],
                   ),
                 ),
