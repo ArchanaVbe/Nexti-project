@@ -13,8 +13,8 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   final TextEditingController _endDateController = TextEditingController();
   final TextEditingController _groupSizeController = TextEditingController();
 
-  String _selectedTripType = 'Leisure';
-  final List<String> _tripTypes = ['Leisure', 'Adventure', 'Cultural', 'Others'];
+  int _currentStep = 1;
+  final List<String> _selectedPlaces = [];
 
   @override
   void dispose() {
@@ -23,6 +23,39 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     _endDateController.dispose();
     _groupSizeController.dispose();
     super.dispose();
+  }
+
+  Map<String, List<String>> _getSuggestedPlaces(String destination) {
+    String dest = destination.toLowerCase().trim();
+    if (dest == 'hampi') {
+      return {
+        'Adventure': ['Matanga Hill Trek', 'Coracle Ride', 'Bouldering at Hemakuta'],
+        'Nature': ['Tungabhadra River', 'Sanapur Lake', 'Anjaneya Hill'],
+        'Heritage': ['Virupaksha Temple', 'Vitthala Temple', 'Lotus Mahal', 'Elephant Stables'],
+        'Shopping': ['Hampi Bazaar', 'Hippie Island Markets']
+      };
+    } else if (dest == 'mysuru' || dest == 'mysore') {
+      return {
+        'Adventure': ['Chamundi Hill Steps', 'KRS Dam Cycling'],
+        'Nature': ['Brindavan Gardens', 'Karanji Lake', 'Ranganathittu Bird Sanctuary'],
+        'Heritage': ['Mysore Palace', 'Chamundeshwari Temple', 'Jaganmohan Palace'],
+        'Shopping': ['Devaraja Market', 'Cauvery Emporium', 'Silk Factory']
+      };
+    } else if (dest == 'gokarna') {
+      return {
+        'Adventure': ['Beach Trekking', 'Surfing', 'Banana Boat Ride'],
+        'Nature': ['Om Beach', 'Half Moon Beach', 'Paradise Beach'],
+        'Heritage': ['Mahabaleshwar Temple', 'Mirjan Fort'],
+        'Shopping': ['Flea Market', 'Car Street Shops']
+      };
+    }
+    // Default fallback
+    return {
+      'Adventure': ['Mountain Trek', 'River Rafting', 'Rock Climbing'],
+      'Nature': ['Botanical Garden', 'Sunset Point', 'Lake View'],
+      'Heritage': ['Historic Fort', 'Ancient Temple', 'Old City Walk'],
+      'Shopping': ['Local Market', 'Handicraft Street']
+    };
   }
 
   Widget _buildStepIndicator(String label, String number, bool isActive) {
@@ -143,6 +176,127 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     }
   }
 
+  Widget _buildStep1() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Trip Details',
+          style: TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            color: Color(0xFF0F172A),
+          ),
+        ),
+        const SizedBox(height: 24),
+        _buildTextField(
+          label: 'Destination',
+          hint: 'e.g. Mysuru, Hampi, Gokarna...',
+          icon: Icons.location_on_outlined,
+          controller: _destinationController,
+        ),
+        _buildTextField(
+          label: 'Start Date',
+          hint: 'Select start date',
+          icon: Icons.calendar_today_outlined,
+          controller: _startDateController,
+          readOnly: true,
+          onTap: () => _selectDate(context, _startDateController),
+        ),
+        _buildTextField(
+          label: 'End Date',
+          hint: 'Select end date',
+          icon: Icons.calendar_today_outlined,
+          controller: _endDateController,
+          readOnly: true,
+          onTap: () => _selectDate(context, _endDateController),
+        ),
+        _buildTextField(
+          label: 'Group Size',
+          hint: 'Number of people',
+          icon: Icons.group_outlined,
+          controller: _groupSizeController,
+          keyboardType: TextInputType.number,
+        ),
+        const SizedBox(height: 40),
+      ],
+    );
+  }
+
+  Widget _buildStep2() {
+    final suggestedPlaces = _getSuggestedPlaces(_destinationController.text);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Preferences in ${_destinationController.text.isNotEmpty ? _destinationController.text : "your destination"}',
+          style: const TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            color: Color(0xFF0F172A),
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Select the places you wish to visit',
+          style: TextStyle(fontSize: 14, color: Color(0xFF64748B)),
+        ),
+        const SizedBox(height: 24),
+        ...suggestedPlaces.entries.map((category) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                category.key,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF334155),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: category.value.map((place) {
+                  final isSelected = _selectedPlaces.contains(place);
+                  return FilterChip(
+                    label: Text(place),
+                    selected: isSelected,
+                    onSelected: (selected) {
+                      setState(() {
+                        if (selected) {
+                          _selectedPlaces.add(place);
+                        } else {
+                          _selectedPlaces.remove(place);
+                        }
+                      });
+                    },
+                    backgroundColor: Colors.white,
+                    selectedColor: const Color(0xFF6366F1).withValues(alpha: 0.1),
+                    checkmarkColor: const Color(0xFF6366F1),
+                    labelStyle: TextStyle(
+                      color: isSelected ? const Color(0xFF6366F1) : const Color(0xFF64748B),
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      side: BorderSide(
+                        color: isSelected ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 24),
+            ],
+          );
+        }),
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -152,7 +306,15 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Color(0xFF0F172A), size: 20),
-          onPressed: () => Navigator.pop(context),
+          onPressed: () {
+            if (_currentStep > 1) {
+              setState(() {
+                _currentStep--;
+              });
+            } else {
+              Navigator.pop(context);
+            }
+          },
         ),
         title: const Text(
           'Create Trip',
@@ -177,117 +339,38 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        _buildStepIndicator('Details', '1', true),
+                        _buildStepIndicator('Details', '1', _currentStep >= 1),
                         Expanded(
                           child: Container(
                             height: 2,
-                            color: const Color(0xFFE2E8F0),
+                            color: _currentStep >= 2 ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
                             margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
                           ),
                         ),
-                        _buildStepIndicator('Preferences', '2', false),
+                        _buildStepIndicator('Preferences', '2', _currentStep >= 2),
                         Expanded(
                           child: Container(
                             height: 2,
-                            color: const Color(0xFFE2E8F0),
+                            color: _currentStep >= 3 ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
                             margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
                           ),
                         ),
-                        _buildStepIndicator('Group', '3', false),
+                        _buildStepIndicator('Group', '3', _currentStep >= 3),
                         Expanded(
                           child: Container(
                             height: 2,
-                            color: const Color(0xFFE2E8F0),
+                            color: _currentStep >= 4 ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
                             margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
                           ),
                         ),
-                        _buildStepIndicator('Review', '4', false),
+                        _buildStepIndicator('Review', '4', _currentStep >= 4),
                       ],
                     ),
                     const SizedBox(height: 32),
 
-                    const Text(
-                      'Trip Details',
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
-                        color: Color(0xFF0F172A),
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-
-                    _buildTextField(
-                      label: 'Destination',
-                      hint: 'e.g. Goa, Manali, Coorg...',
-                      icon: Icons.location_on_outlined,
-                      controller: _destinationController,
-                    ),
-                    
-                    _buildTextField(
-                      label: 'Start Date',
-                      hint: 'Select start date',
-                      icon: Icons.calendar_today_outlined,
-                      controller: _startDateController,
-                      readOnly: true,
-                      onTap: () => _selectDate(context, _startDateController),
-                    ),
-
-                    _buildTextField(
-                      label: 'End Date',
-                      hint: 'Select end date',
-                      icon: Icons.calendar_today_outlined,
-                      controller: _endDateController,
-                      readOnly: true,
-                      onTap: () => _selectDate(context, _endDateController),
-                    ),
-
-                    _buildTextField(
-                      label: 'Group Size',
-                      hint: 'Number of people',
-                      icon: Icons.group_outlined,
-                      controller: _groupSizeController,
-                      keyboardType: TextInputType.number,
-                    ),
-
-                    const Text(
-                      'Trip Type',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF334155),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 10,
-                      runSpacing: 10,
-                      children: _tripTypes.map((type) {
-                        final isSelected = _selectedTripType == type;
-                        return ChoiceChip(
-                          label: Text(type),
-                          selected: isSelected,
-                          onSelected: (selected) {
-                            setState(() {
-                              if (selected) _selectedTripType = type;
-                            });
-                          },
-                          backgroundColor: Colors.white,
-                          selectedColor: const Color(0xFF6366F1),
-                          labelStyle: TextStyle(
-                            color: isSelected ? Colors.white : const Color(0xFF64748B),
-                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(20),
-                            side: BorderSide(
-                              color: isSelected ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
-                            ),
-                          ),
-                          showCheckmark: false,
-                        );
-                      }).toList(),
-                    ),
-                    const SizedBox(height: 40),
+                    if (_currentStep == 1) _buildStep1(),
+                    if (_currentStep == 2) _buildStep2(),
+                    if (_currentStep == 3) const Center(child: Text("Group Section - Coming next")),
                   ],
                 ),
               ),
@@ -311,7 +394,11 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                 height: 56,
                 child: ElevatedButton(
                   onPressed: () {
-                    // Navigate to next step or handle form submission
+                    if (_currentStep < 3) {
+                      setState(() {
+                        _currentStep++;
+                      });
+                    }
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF6366F1),
