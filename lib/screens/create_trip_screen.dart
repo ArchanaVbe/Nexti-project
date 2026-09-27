@@ -15,6 +15,8 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
   int _currentStep = 1;
   final List<String> _selectedPlaces = [];
+  // ignore: prefer_final_fields
+  bool _isHost = true; // Set to true by default for testing, friend can toggle this
 
   @override
   void dispose() {
@@ -194,6 +196,17 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           hint: 'e.g. Mysuru, Hampi, Gokarna...',
           icon: Icons.location_on_outlined,
           controller: _destinationController,
+          readOnly: !_isHost,
+          onTap: () {
+            if (!_isHost) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('You cannot change destination, ask host if you wish to change destination'),
+                  backgroundColor: Colors.redAccent,
+                ),
+              );
+            }
+          },
         ),
         _buildTextField(
           label: 'Start Date',
@@ -297,6 +310,61 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     );
   }
 
+  Widget _buildStep3() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Group Planning',
+          style: TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            color: Color(0xFF0F172A),
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Invite your friends to collaborate on this trip.',
+          style: TextStyle(fontSize: 14, color: Color(0xFF64748B)),
+        ),
+        const SizedBox(height: 32),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF8FAFC),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+          ),
+          child: const Column(
+            children: [
+              Icon(Icons.group_add_outlined, size: 48, color: Color(0xFF94A3B8)),
+              SizedBox(height: 16),
+              Text(
+                'Group Features Coming Soon',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF475569),
+                ),
+              ),
+              SizedBox(height: 8),
+              Text(
+                'Pending integration from collaborator branch. Includes Trip Code, URL sharing, and QR Codes.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Color(0xFF64748B),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 40),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -370,7 +438,8 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
                     if (_currentStep == 1) _buildStep1(),
                     if (_currentStep == 2) _buildStep2(),
-                    if (_currentStep == 3) const Center(child: Text("Group Section - Coming next")),
+                    if (_currentStep == 3) _buildStep3(),
+                    if (_currentStep == 4) const Center(child: Text("Review Section - Coming next")),
                   ],
                 ),
               ),
@@ -394,7 +463,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                 height: 56,
                 child: ElevatedButton(
                   onPressed: () {
-                    if (_currentStep < 3) {
+                    if (_currentStep < 4) {
                       setState(() {
                         _currentStep++;
                       });
