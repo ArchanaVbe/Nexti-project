@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/destination.dart';
+import 'create_trip_screen.dart';
 
 class HomeTabScreen extends StatelessWidget {
   final void Function(int index)? onNavigateTab;
@@ -9,105 +10,13 @@ class HomeTabScreen extends StatelessWidget {
     this.onNavigateTab,
   });
 
-  void _showCreateTripBottomSheet(BuildContext context) {
-    final destinationController = TextEditingController();
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
-        padding: EdgeInsets.only(
-          left: 20,
-          right: 20,
-          top: 24,
-          bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
-        ),
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Center(
-              child: Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade300,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-            const SizedBox(height: 18),
-            const Text(
-              'Create a New Trip',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF1E1B4B),
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Enter your destination to start collaborating with friends.',
-              style: TextStyle(color: Color(0xFF64748B), fontSize: 14),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: destinationController,
-              decoration: InputDecoration(
-                hintText: 'e.g. Coorg, Ooty, Goa',
-                prefixIcon: const Icon(Icons.flight_takeoff_rounded, color: Color(0xFF6366F1)),
-                filled: true,
-                fillColor: const Color(0xFFF8F9FE),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              height: 50,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF6366F1),
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  elevation: 0,
-                ),
-                onPressed: () {
-                  Navigator.pop(ctx);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        destinationController.text.trim().isNotEmpty
-                            ? 'Trip "${destinationController.text.trim()}" created!'
-                            : 'New trip initialized!',
-                      ),
-                    ),
-                  );
-                },
-                child: const Text(
-                  'Start Planning with AI',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
+  void _navigateToCreateTrip(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const CreateTripScreen()),
     );
   }
+
 
   @override
   Widget build(BuildContext context) {
@@ -296,7 +205,7 @@ class HomeTabScreen extends StatelessWidget {
             bgColor: const Color(0xFFF3E8FF),
             label: 'Create Trip',
             subtitle: 'Plan with friends',
-            onTap: () => _showCreateTripBottomSheet(context),
+            onTap: () => _navigateToCreateTrip(context),
           ),
         ),
         const SizedBox(width: 14),
