@@ -3,13 +3,23 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'trip_details_screen.dart';
 import '../trip_qr_screen.dart';
 import '../qr_scanner_screen.dart';
 import '../trip_qr_hub.dart';
 
 class CreateTripScreen extends StatefulWidget {
-  const CreateTripScreen({super.key});
+  final bool isHost;
+  final String? tripCode;
+  final Map<String, dynamic>? initialTripData;
+
+  const CreateTripScreen({
+    super.key,
+    this.isHost = true,
+    this.tripCode,
+    this.initialTripData,
+  });
 
   @override
   State<CreateTripScreen> createState() => _CreateTripScreenState();
@@ -28,8 +38,104 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   bool _isLoadingPlaces = false;
   String _lastFetchedDestination = '';
   
-  // ignore: prefer_final_fields
-  bool _isHost = true; // Set to true by default for testing, friend can toggle this
+  late bool _isHost;
+  late String _tripCode;
+
+  @override
+  void initState() {
+    super.initState();
+    _isHost = widget.isHost;
+    _tripCode = widget.tripCode ??
+        'TRIP-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
+
+    if (widget.initialTripData != null) {
+      _applyTripData(widget.initialTripData!);
+    } else if (widget.tripCode != null) {
+      _lookupAndApplyTrip(widget.tripCode!);
+    }
+  }
+
+  void _applyTripData(Map<String, dynamic> data) {
+    if (data['destination'] != null && data['destination'].toString().isNotEmpty) {
+      _destinationController.text = data['destination'].toString();
+      _fetchPlacesFromGoogle(_destinationController.text);
+    }
+    if (data['startDate'] != null) {
+      _startDateController.text = data['startDate'].toString();
+    }
+    if (data['endDate'] != null) {
+      _endDateController.text = data['endDate'].toString();
+    }
+    if (data['groupSize'] != null) {
+      _groupSizeController.text = data['groupSize'].toString();
+    }
+    if (data['places'] is List) {
+      _selectedPlaces.clear();
+      _selectedPlaces.addAll((data['places'] as List).map((e) => e.toString()));
+    }
+    if (data['tripCode'] != null && data['tripCode'].toString().isNotEmpty) {
+      _tripCode = data['tripCode'].toString();
+    }
+  }
+
+  Future<void> _lookupAndApplyTrip(String code) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedTrips = prefs.getStringList('saved_trips') ?? [];
+      final cleanCode = code.trim().toUpperCase();
+
+      for (final tripStr in savedTrips) {
+        try {
+          final Map<String, dynamic> trip = jsonDecode(tripStr);
+          final tripCode =
+              (trip['tripCode'] ?? trip['id'] ?? '').toString().toUpperCase();
+          if (tripCode == cleanCode ||
+              tripCode.contains(cleanCode) ||
+              cleanCode.contains(tripCode)) {
+            if (mounted) {
+              setState(() {
+                _applyTripData(trip);
+              });
+            }
+            return;
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    // Firestore lookup
+    try {
+      final doc =
+          await FirebaseFirestore.instance.collection('trips').doc(code.trim()).get();
+      if (doc.exists && doc.data() != null) {
+        final data = doc.data()!;
+        if (mounted) {
+          setState(() {
+            _applyTripData({
+              'destination': data['destination'] ?? data['tripName'] ?? 'Karnataka',
+              'startDate': data['startDate'],
+              'endDate': data['endDate'],
+              'groupSize': data['groupSize'],
+              'places': data['places'],
+              'tripCode': code.trim(),
+            });
+          });
+        }
+        return;
+      }
+    } catch (_) {}
+
+    // Fallback if not found in local or remote storage
+    if (mounted && _destinationController.text.isEmpty) {
+      setState(() {
+        _destinationController.text = 'Karnataka';
+        _startDateController.text = '28/9/2026';
+        _endDateController.text = '30/9/2026';
+        _groupSizeController.text = '4';
+        _fetchPlacesFromGoogle('Karnataka');
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -246,6 +352,35 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (!_isHost) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF6366F1).withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.3),
+              ),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.info_outline_rounded, color: Color(0xFF6366F1), size: 18),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'You joined as participant. Destination is managed by host.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF6366F1),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
         Text(
           'Trip Details',
           style: TextStyle(
@@ -434,7 +569,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         ? _destinationController.text.trim()
         : 'Karnataka';
     final tripName = '$dest Expedition';
-    final sampleTripId = 'TRIP-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
+    final sampleTripId = _tripCode;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -731,13 +866,28 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             }
           },
         ),
-        title: Text(
-          'Create Trip',
-          style: TextStyle(
-            color: isDark ? Colors.white : const Color(0xFF0F172A),
-            fontSize: 20,
-            fontWeight: FontWeight.w800,
-          ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              _isHost ? 'Create Trip' : 'Trip Planning Room',
+              style: TextStyle(
+                color: isDark ? Colors.white : const Color(0xFF0F172A),
+                fontSize: 19,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            if (!_isHost)
+              Text(
+                'Participant Mode • $_tripCode',
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: Color(0xFF6366F1),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+          ],
         ),
         centerTitle: false,
       ),
@@ -839,6 +989,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                       
                       final tripData = {
                         'id': DateTime.now().millisecondsSinceEpoch.toString(),
+                        'tripCode': _tripCode,
                         'destination': _destinationController.text.trim().isNotEmpty
                             ? _destinationController.text.trim()
                             : 'Karnataka',

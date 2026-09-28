@@ -1,5 +1,9 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/destination.dart';
 import 'create_trip_screen.dart';
 
@@ -16,6 +20,338 @@ class HomeTabScreen extends StatelessWidget {
       context,
       MaterialPageRoute(builder: (context) => const CreateTripScreen()),
     );
+    if (result == true) {
+      onNavigateTab?.call(1);
+    }
+  }
+
+  void _showJoinTripModal(BuildContext context) {
+    final codeController = TextEditingController();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (modalCtx, setModalState) {
+            final hasCode = codeController.text.trim().isNotEmpty;
+            final bottomInset = MediaQuery.of(sheetContext).viewInsets.bottom;
+
+            return Container(
+              padding: EdgeInsets.only(
+                left: 24,
+                right: 24,
+                top: 16,
+                bottom: bottomInset > 0 ? bottomInset + 20 : 32,
+              ),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF1E293B) : Colors.white,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: isDark ? 0.5 : 0.15),
+                    blurRadius: 20,
+                    offset: const Offset(0, -4),
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 44,
+                      height: 5,
+                      margin: const EdgeInsets.only(bottom: 20),
+                      decoration: BoxDecoration(
+                        color: isDark ? const Color(0xFF475569) : const Color(0xFFCBD5E1),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF6366F1).withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: const Icon(
+                          Icons.group_add_rounded,
+                          color: Color(0xFF6366F1),
+                          size: 24,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Join Trip',
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w800,
+                                color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Enter host code to join planning room',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(sheetContext),
+                        icon: Icon(
+                          Icons.close_rounded,
+                          color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    'Enter Trip Code',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: codeController,
+                    autofocus: true,
+                    textCapitalization: TextCapitalization.characters,
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 1.2,
+                      color: isDark ? Colors.white : const Color(0xFF0F172A),
+                    ),
+                    decoration: InputDecoration(
+                      hintText: 'e.g. TRIP-295145',
+                      hintStyle: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w500,
+                        letterSpacing: 0.5,
+                        color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+                      ),
+                      prefixIcon: const Icon(
+                        Icons.pin_rounded,
+                        color: Color(0xFF6366F1),
+                        size: 22,
+                      ),
+                      suffixIcon: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (hasCode)
+                            IconButton(
+                              icon: const Icon(Icons.clear_rounded, size: 20),
+                              color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                              onPressed: () {
+                                codeController.clear();
+                                setModalState(() {});
+                              },
+                            )
+                          else
+                            TextButton.icon(
+                              onPressed: () async {
+                                final data = await Clipboard.getData('text/plain');
+                                if (data?.text != null && data!.text!.trim().isNotEmpty) {
+                                  String cleanText = data.text!.trim();
+                                  if (cleanText.startsWith('nexttripia:join:')) {
+                                    cleanText = cleanText.replaceFirst('nexttripia:join:', '').trim();
+                                  }
+                                  codeController.text = cleanText;
+                                  setModalState(() {});
+                                }
+                              },
+                              icon: const Icon(Icons.content_paste_rounded, size: 16, color: Color(0xFF6366F1)),
+                              label: const Text(
+                                'Paste',
+                                style: TextStyle(
+                                  color: Color(0xFF6366F1),
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                          const SizedBox(width: 4),
+                        ],
+                      ),
+                      filled: true,
+                      fillColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        borderSide: BorderSide(
+                          color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                        ),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        borderSide: BorderSide(
+                          color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                        ),
+                      ),
+                      focusedBorder: const OutlineInputBorder(
+                        borderRadius: BorderRadius.all(Radius.circular(16)),
+                        borderSide: BorderSide(color: Color(0xFF6366F1), width: 2),
+                      ),
+                    ),
+                    onChanged: (value) {
+                      setModalState(() {});
+                    },
+                    onSubmitted: (value) {
+                      if (value.trim().isNotEmpty) {
+                        _handleJoinTrip(sheetContext, context, value.trim());
+                      }
+                    },
+                  ),
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 250),
+                    transitionBuilder: (child, animation) {
+                      return ScaleTransition(
+                        scale: CurvedAnimation(
+                          parent: animation,
+                          curve: Curves.easeOutBack,
+                        ),
+                        child: FadeTransition(opacity: animation, child: child),
+                      );
+                    },
+                    child: hasCode
+                        ? Container(
+                            key: const ValueKey('join_button_active'),
+                            width: double.infinity,
+                            height: 52,
+                            margin: const EdgeInsets.only(top: 20),
+                            child: ElevatedButton(
+                              onPressed: () {
+                                _handleJoinTrip(sheetContext, context, codeController.text.trim());
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF6366F1),
+                                foregroundColor: Colors.white,
+                                elevation: 4,
+                                shadowColor: const Color(0xFF6366F1).withValues(alpha: 0.4),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                              ),
+                              child: const Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Text(
+                                    'Join',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.4,
+                                    ),
+                                  ),
+                                  SizedBox(width: 8),
+                                  Icon(Icons.arrow_forward_rounded, size: 20),
+                                ],
+                              ),
+                            ),
+                          )
+                        : const SizedBox(
+                            key: ValueKey('join_button_placeholder'),
+                            height: 8,
+                          ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _handleJoinTrip(
+    BuildContext sheetContext,
+    BuildContext homeContext,
+    String rawCode,
+  ) async {
+    String cleanCode = rawCode.trim();
+    if (cleanCode.startsWith('nexttripia:join:')) {
+      cleanCode = cleanCode.replaceFirst('nexttripia:join:', '').trim();
+    }
+    if (cleanCode.isEmpty) return;
+
+    // Close bottom sheet
+    Navigator.pop(sheetContext);
+
+    // Look for matching trip data in SharedPreferences or Firestore
+    Map<String, dynamic>? matchingTrip;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedTrips = prefs.getStringList('saved_trips') ?? [];
+      final targetUpper = cleanCode.toUpperCase();
+
+      for (final tripStr in savedTrips) {
+        try {
+          final Map<String, dynamic> trip = jsonDecode(tripStr);
+          final id = (trip['id'] ?? '').toString().toUpperCase();
+          final code = (trip['tripCode'] ?? '').toString().toUpperCase();
+          if (id == targetUpper ||
+              code == targetUpper ||
+              id.contains(targetUpper) ||
+              code.contains(targetUpper)) {
+            matchingTrip = trip;
+            break;
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    if (matchingTrip == null) {
+      try {
+        final doc =
+            await FirebaseFirestore.instance.collection('trips').doc(cleanCode).get();
+        if (doc.exists && doc.data() != null) {
+          final data = doc.data()!;
+          matchingTrip = {
+            'id': doc.id,
+            'tripCode': cleanCode,
+            'destination': data['destination'] ?? data['tripName'] ?? 'Karnataka',
+            'startDate': data['startDate'] ?? '28/9/2026',
+            'endDate': data['endDate'] ?? '30/9/2026',
+            'groupSize': data['groupSize'] ?? '4',
+            'places': data['places'] ?? <String>[],
+          };
+        }
+      } catch (_) {}
+    }
+
+    if (!homeContext.mounted) return;
+
+    // Navigate to Trip Planning Room
+    final result = await Navigator.push(
+      homeContext,
+      MaterialPageRoute(
+        builder: (context) => CreateTripScreen(
+          isHost: false,
+          tripCode: cleanCode,
+          initialTripData: matchingTrip,
+        ),
+      ),
+    );
+
     if (result == true) {
       onNavigateTab?.call(1);
     }
@@ -48,7 +384,7 @@ class HomeTabScreen extends StatelessWidget {
               _buildSearchBar(context),
               const SizedBox(height: 20),
 
-              // Quick Actions (Create Trip & Saved Places - My Trips and Profile are in footer)
+              // Quick Actions (Create Trip & Join Trip)
               _buildQuickActions(context),
               const SizedBox(height: 28),
 
@@ -343,12 +679,12 @@ class HomeTabScreen extends StatelessWidget {
         Expanded(
           child: _buildWideActionCard(
             context,
-            icon: Icons.bookmark_rounded,
-            iconColor: const Color(0xFF16A34A),
-            bgColor: const Color(0xFFDCFCE7),
-            label: 'Saved Places',
-            subtitle: 'Your bookmarks',
-            onTap: () => onNavigateTab?.call(1), // Navigate to Trips
+            icon: Icons.group_add_rounded,
+            iconColor: const Color(0xFF0284C7),
+            bgColor: const Color(0xFFE0F2FE),
+            label: 'Join Trip',
+            subtitle: 'Enter trip code',
+            onTap: () => _showJoinTripModal(context),
           ),
         ),
       ],
