@@ -119,7 +119,8 @@ class _TripQrHubState extends State<TripQrHub> {
                       MaterialPageRoute(builder: (context) => const QrScannerScreen()),
                     );
 
-                    if (joinedTripId != null && mounted) {
+                    if (!context.mounted) return;
+                    if (joinedTripId != null) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text('Joined trip ID: $joinedTripId'),

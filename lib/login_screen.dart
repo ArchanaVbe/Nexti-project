@@ -339,9 +339,9 @@ class _LoginScreenState extends State<LoginScreen> {
                   colors: [
                     Colors.white,
                     Colors.white,
-                    Colors.white.withOpacity(0.92),
-                    Colors.white.withOpacity(0.65),
-                    Colors.white.withOpacity(0.15),
+                    Colors.white.withValues(alpha: 0.92),
+                    Colors.white.withValues(alpha: 0.65),
+                    Colors.white.withValues(alpha: 0.15),
                     Colors.transparent,
                   ],
                   stops: const [0.0, 0.28, 0.45, 0.62, 0.82, 1.0],
@@ -361,17 +361,38 @@ class _LoginScreenState extends State<LoginScreen> {
                   children: [
                     const SizedBox(height: 28),
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: const [
-                        Icon(Icons.public, size: 20, color: Colors.black87),
-                        SizedBox(width: 8),
-                        Text(
-                          'NextTripia AI',
-                          style: TextStyle(
-                            fontSize: 17,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: -0.2,
-                            color: Colors.black87,
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const SizedBox(width: 48), // Balancing spacer
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: const [
+                            Icon(Icons.public, size: 20, color: Colors.black87),
+                            SizedBox(width: 8),
+                            Text(
+                              'NextTripia AI',
+                              style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -0.2,
+                                color: Colors.black87,
+                              ),
+                            ),
+                          ],
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pushReplacementNamed(context, '/home'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: Colors.black54,
+                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('Skip', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                              SizedBox(width: 2),
+                              Icon(Icons.arrow_forward_ios_rounded, size: 11),
+                            ],
                           ),
                         ),
                       ],
@@ -408,7 +429,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         border: Border.all(color: Colors.grey.shade300, width: 1),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withOpacity(0.05),
+                            color: Colors.black.withValues(alpha: 0.05),
                             blurRadius: 10,
                             offset: const Offset(0, 3),
                           ),
@@ -473,7 +494,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     // Email Field
                     Container(
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.88),
+                        color: Colors.white.withValues(alpha: 0.88),
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(color: Colors.grey.shade300, width: 1),
                       ),
@@ -504,7 +525,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     // Password Field
                     Container(
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.88),
+                        color: Colors.white.withValues(alpha: 0.88),
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(color: Colors.grey.shade300, width: 1),
                       ),

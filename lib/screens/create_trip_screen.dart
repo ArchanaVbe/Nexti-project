@@ -1,8 +1,12 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'trip_details_screen.dart';
+import '../trip_qr_screen.dart';
+import '../qr_scanner_screen.dart';
+import '../trip_qr_hub.dart';
 
 class CreateTripScreen extends StatefulWidget {
   const CreateTripScreen({super.key});
@@ -426,11 +430,17 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   }
 
   Widget _buildStep4(bool isDark) {
+    final dest = _destinationController.text.trim().isNotEmpty
+        ? _destinationController.text.trim()
+        : 'Karnataka';
+    final tripName = '$dest Expedition';
+    final sampleTripId = 'TRIP-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Group Planning',
+          'Group Planning & QR Invite',
           style: TextStyle(
             fontSize: 22,
             fontWeight: FontWeight.w800,
@@ -439,53 +449,257 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         ),
         const SizedBox(height: 8),
         Text(
-          'Invite your friends to collaborate on this trip.',
+          'Invite friends to your trip using QR codes, share join codes, or scan an existing trip.',
           style: TextStyle(
             fontSize: 14,
             color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
           ),
         ),
-        const SizedBox(height: 32),
+        const SizedBox(height: 24),
+
+        // Trip Info Card
         Container(
           width: double.infinity,
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+            color: isDark ? const Color(0xFF1E293B) : Colors.white,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
               color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
             ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.04),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
+              ),
+            ],
           ),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(
-                Icons.group_add_outlined,
-                size: 48,
-                color: isDark ? const Color(0xFF818CF8) : const Color(0xFF94A3B8),
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF6366F1).withValues(alpha: 0.12),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.groups_rounded, color: Color(0xFF6366F1), size: 24),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          tripName,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: isDark ? Colors.white : const Color(0xFF0F172A),
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Group Size: ${_groupSizeController.text.trim().isNotEmpty ? _groupSizeController.text.trim() : '1'} People',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 16),
-              Text(
-                'Group Features Coming Soon',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: isDark ? Colors.white : const Color(0xFF475569),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(10),
                 ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Pending integration from collaborator branch. Includes Trip Code, URL sharing, and QR Codes.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 14,
-                  color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Trip Code: $sampleTripId',
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                        color: isDark ? const Color(0xFF818CF8) : const Color(0xFF4F46E5),
+                      ),
+                    ),
+                    InkWell(
+                      onTap: () {
+                        Clipboard.setData(ClipboardData(text: sampleTripId));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Trip code copied!'),
+                            backgroundColor: Color(0xFF6366F1),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      },
+                      child: const Icon(Icons.copy_rounded, size: 18, color: Color(0xFF6366F1)),
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 40),
+
+        const SizedBox(height: 20),
+
+        // Action 1: Generate QR Code
+        _buildGroupActionCard(
+          isDark: isDark,
+          icon: Icons.qr_code_2_rounded,
+          iconColor: const Color(0xFF6366F1),
+          title: 'Generate Trip QR Code',
+          subtitle: 'Let friends scan your screen to join this group instantly',
+          buttonLabel: 'Show QR Code',
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => TripQrScreen(
+                  tripId: sampleTripId,
+                  tripName: tripName,
+                ),
+              ),
+            );
+          },
+        ),
+
+        const SizedBox(height: 14),
+
+        // Action 2: Scan QR Code to Join
+        _buildGroupActionCard(
+          isDark: isDark,
+          icon: Icons.qr_code_scanner_rounded,
+          iconColor: const Color(0xFF10B981),
+          title: 'Scan QR to Join Group',
+          subtitle: 'Use your camera to scan a friend’s trip QR code',
+          buttonLabel: 'Scan with Camera',
+          onTap: () async {
+            final joinedTripId = await Navigator.push<String>(
+              context,
+              MaterialPageRoute(builder: (context) => const QrScannerScreen()),
+            );
+            if (joinedTripId != null && mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Successfully joined trip: $joinedTripId'),
+                  backgroundColor: const Color(0xFF10B981),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+          },
+        ),
+
+        const SizedBox(height: 14),
+
+        // Action 3: Open Full QR Hub
+        _buildGroupActionCard(
+          isDark: isDark,
+          icon: Icons.hub_rounded,
+          iconColor: const Color(0xFFF59E0B),
+          title: 'Trip QR Management Hub',
+          subtitle: 'Manage group invitations, members, and active QR codes',
+          buttonLabel: 'Open QR Hub',
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const TripQrHub()),
+            );
+          },
+        ),
+
+        const SizedBox(height: 36),
       ],
+    );
+  }
+
+  Widget _buildGroupActionCard({
+    required bool isDark,
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String subtitle,
+    required String buttonLabel,
+    required VoidCallback onTap,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1E293B) : Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: iconColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, color: iconColor, size: 22),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: isDark ? Colors.white : const Color(0xFF0F172A),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            height: 42,
+            child: OutlinedButton(
+              onPressed: onTap,
+              style: OutlinedButton.styleFrom(
+                side: BorderSide(color: iconColor.withValues(alpha: 0.5)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                foregroundColor: iconColor,
+              ),
+              child: Text(buttonLabel, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
