@@ -1,6 +1,7 @@
 {
   "project_info": {
     "project_number": "353650244505",
+    "firebase_url": "https://nextripia-3e2bc-default-rtdb.asia-southeast1.firebasedatabase.app",
     "project_id": "nextripia-3e2bc",
     "storage_bucket": "nextripia-3e2bc.firebasestorage.app"
   },
@@ -12,7 +13,28 @@
           "package_name": "com.example.nexti_project"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "353650244505-3uu5aqton1snod6o573p4gia13cavtg7.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.nexti_project",
+            "certificate_hash": "27c252e2cd859b595b95f3969360c5424840b7a2"
+          }
+        },
+        {
+          "client_id": "353650244505-s1od06o6ufhg4ghc9d817qh6mas7qa1f.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.nexti_project",
+            "certificate_hash": "64c02ac839c4afd8adee417541bfe60239bbbe93"
+          }
+        },
+        {
+          "client_id": "353650244505-2ggimp213b5315gtr3mmg7mmmjk0of8t.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyDDZyjRf6-eCvojb9ZyCxGXMdzz03cOlyk"
@@ -20,7 +42,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "353650244505-2ggimp213b5315gtr3mmg7mmmjk0of8t.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }
