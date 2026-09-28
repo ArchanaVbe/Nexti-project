@@ -6,8 +6,6 @@ import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'trip_details_screen.dart';
 import '../trip_qr_screen.dart';
-import '../qr_scanner_screen.dart';
-import '../trip_qr_hub.dart';
 
 class CreateTripScreen extends StatefulWidget {
   final bool isHost;
@@ -584,7 +582,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         ),
         const SizedBox(height: 8),
         Text(
-          'Invite friends to your trip using QR codes, share join codes, or scan an existing trip.',
+          'Invite friends to your trip using QR codes or by sharing your trip code.',
           style: TextStyle(
             fontSize: 14,
             color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
@@ -707,51 +705,6 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                   tripName: tripName,
                 ),
               ),
-            );
-          },
-        ),
-
-        const SizedBox(height: 14),
-
-        // Action 2: Scan QR Code to Join
-        _buildGroupActionCard(
-          isDark: isDark,
-          icon: Icons.qr_code_scanner_rounded,
-          iconColor: const Color(0xFF10B981),
-          title: 'Scan QR to Join Group',
-          subtitle: 'Use your camera to scan a friend’s trip QR code',
-          buttonLabel: 'Scan with Camera',
-          onTap: () async {
-            final joinedTripId = await Navigator.push<String>(
-              context,
-              MaterialPageRoute(builder: (context) => const QrScannerScreen()),
-            );
-            if (joinedTripId != null && mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('Successfully joined trip: $joinedTripId'),
-                  backgroundColor: const Color(0xFF10B981),
-                  behavior: SnackBarBehavior.floating,
-                ),
-              );
-            }
-          },
-        ),
-
-        const SizedBox(height: 14),
-
-        // Action 3: Open Full QR Hub
-        _buildGroupActionCard(
-          isDark: isDark,
-          icon: Icons.hub_rounded,
-          iconColor: const Color(0xFFF59E0B),
-          title: 'Trip QR Management Hub',
-          subtitle: 'Manage group invitations, members, and active QR codes',
-          buttonLabel: 'Open QR Hub',
-          onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const TripQrHub()),
             );
           },
         ),
