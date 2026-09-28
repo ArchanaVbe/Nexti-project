@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import '../theme/app_theme.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -493,24 +494,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Scaffold(
-      backgroundColor: const Color(0xFFFAFAFC),
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
-        backgroundColor: const Color(0xFFFAFAFC),
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
         elevation: 0,
         centerTitle: false,
-        title: const Text(
+        title: Text(
           'My Profile',
           style: TextStyle(
             fontSize: 22,
             fontWeight: FontWeight.w800,
-            color: Color(0xFF1E1B4B),
+            color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
             letterSpacing: -0.4,
           ),
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.edit_outlined, color: Color(0xFF6366F1)),
+            icon: Icon(Icons.edit_outlined, color: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF6366F1)),
             tooltip: 'Edit Profile',
             onPressed: _showEditProfileBottomSheet,
           ),
@@ -543,8 +546,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
               height: 50,
               child: OutlinedButton.icon(
                 style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.red.shade600,
-                  side: BorderSide(color: Colors.red.shade200),
+                  foregroundColor: isDark ? const Color(0xFFF87171) : Colors.red.shade600,
+                  side: BorderSide(color: isDark ? const Color(0xFF7F1D1D) : Colors.red.shade200),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(16),
                   ),
@@ -565,16 +568,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Widget _buildProfileHeaderCard() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: isDark ? const Color(0xFF1E293B) : Colors.white,
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: const Color(0xFFF1F5F9)),
+        border: Border.all(color: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
+            color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.04),
             blurRadius: 12,
             offset: const Offset(0, 4),
           ),
@@ -598,7 +603,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             end: Alignment.bottomRight,
                           )
                         : null,
-                    color: _profileImage != null ? Colors.grey.shade200 : null,
+                    color: _profileImage != null ? (isDark ? const Color(0xFF334155) : Colors.grey.shade200) : null,
                     shape: BoxShape.circle,
                     image: _profileImage != null
                         ? DecorationImage(
@@ -607,7 +612,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           )
                         : null,
                     border: Border.all(
-                      color: const Color(0xFFEEF2FF),
+                      color: isDark ? const Color(0xFF312E81) : const Color(0xFFEEF2FF),
                       width: 3,
                     ),
                     boxShadow: [
@@ -646,7 +651,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         end: Alignment.bottomRight,
                       ),
                       shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 2.5),
+                      border: Border.all(
+                        color: isDark ? const Color(0xFF1E293B) : Colors.white,
+                        width: 2.5,
+                      ),
                       boxShadow: [
                         BoxShadow(
                           color: Colors.black.withValues(alpha: 0.15),
@@ -670,10 +678,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
           // User Name
           Text(
             _fullName,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 24,
               fontWeight: FontWeight.w800,
-              color: Color(0xFF0F172A),
+              color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
             ),
           ),
           const SizedBox(height: 4),
@@ -681,9 +689,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
           // User Email
           Text(
             _email,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 15,
-              color: Color(0xFF1E293B),
+              color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF1E293B),
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -693,20 +701,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
             decoration: BoxDecoration(
-              color: const Color(0xFFEEF2FF),
+              color: isDark ? const Color(0xFF312E81) : const Color(0xFFEEF2FF),
               borderRadius: BorderRadius.circular(20),
             ),
-            child: const Row(
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.verified_rounded, size: 16, color: Color(0xFF6366F1)),
-                SizedBox(width: 6),
+                Icon(
+                  Icons.verified_rounded,
+                  size: 16,
+                  color: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF6366F1),
+                ),
+                const SizedBox(width: 6),
                 Text(
                   'Karnataka Explorer',
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
-                    color: Color(0xFF4F46E5),
+                    color: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF4F46E5),
                   ),
                 ),
               ],
@@ -718,28 +730,32 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Widget _buildSectionHeader(String title) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Align(
       alignment: Alignment.centerLeft,
       child: Text(
         title,
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 16,
           fontWeight: FontWeight.w800,
-          color: Color(0xFF1E1B4B),
+          color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
         ),
       ),
     );
   }
 
   Widget _buildAccountDetailsCard() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: isDark ? const Color(0xFF1E293B) : Colors.white,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFFF1F5F9)),
+        border: Border.all(color: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
+            color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.03),
             blurRadius: 10,
             offset: const Offset(0, 3),
           ),
@@ -749,48 +765,48 @@ class _ProfileScreenState extends State<ProfileScreen> {
         children: [
           _buildDetailRow(
             icon: Icons.person_rounded,
-            iconColor: const Color(0xFF7C3AED),
-            bgColor: const Color(0xFFF3E8FF),
+            iconColor: isDark ? const Color(0xFFA78BFA) : const Color(0xFF7C3AED),
+            bgColor: isDark ? const Color(0xFF2E1065) : const Color(0xFFF3E8FF),
             label: 'Full Name',
             value: _fullName,
           ),
           _buildDivider(),
           _buildDetailRow(
             icon: Icons.email_rounded,
-            iconColor: const Color(0xFF0284C7),
-            bgColor: const Color(0xFFE0F2FE),
+            iconColor: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7),
+            bgColor: isDark ? const Color(0xFF082F49) : const Color(0xFFE0F2FE),
             label: 'Email',
             value: _email,
           ),
           _buildDivider(),
           _buildDetailRow(
             icon: Icons.phone_rounded,
-            iconColor: const Color(0xFF16A34A),
-            bgColor: const Color(0xFFDCFCE7),
+            iconColor: isDark ? const Color(0xFF4ADE80) : const Color(0xFF16A34A),
+            bgColor: isDark ? const Color(0xFF052E16) : const Color(0xFFDCFCE7),
             label: 'Phone Number',
             value: _phone,
           ),
           _buildDivider(),
           _buildDetailRow(
             icon: Icons.location_on_rounded,
-            iconColor: const Color(0xFFEA580C),
-            bgColor: const Color(0xFFFFEDD5),
+            iconColor: isDark ? const Color(0xFFFB923C) : const Color(0xFFEA580C),
+            bgColor: isDark ? const Color(0xFF431407) : const Color(0xFFFFEDD5),
             label: 'Location',
             value: _location,
           ),
           _buildDivider(),
           _buildDetailRow(
             icon: Icons.lock_person_rounded,
-            iconColor: const Color(0xFF6366F1),
-            bgColor: const Color(0xFFEEF2FF),
+            iconColor: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF6366F1),
+            bgColor: isDark ? const Color(0xFF1E1B4B) : const Color(0xFFEEF2FF),
             label: 'Auth Method',
             value: _authProvider,
           ),
           _buildDivider(),
           _buildDetailRow(
             icon: Icons.calendar_today_rounded,
-            iconColor: const Color(0xFF64748B),
-            bgColor: const Color(0xFFF1F5F9),
+            iconColor: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+            bgColor: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9),
             label: 'Member Since',
             value: _memberSince,
             isLast: true,
@@ -808,6 +824,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required String value,
     bool isLast = false,
   }) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       child: Row(
@@ -828,19 +846,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
               children: [
                 Text(
                   label,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 13,
-                    color: Color(0xFF334155),
+                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF334155),
                     fontWeight: FontWeight.w700,
                   ),
                 ),
                 const SizedBox(height: 2),
                 Text(
                   value,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w800,
-                    color: Color(0xFF0F172A),
+                    color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
                   ),
                 ),
               ],
@@ -852,24 +870,28 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Widget _buildDivider() {
-    return const Divider(
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Divider(
       height: 1,
       thickness: 1,
       indent: 68,
       endIndent: 16,
-      color: Color(0xFFF1F5F9),
+      color: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9),
     );
   }
 
   Widget _buildPreferencesCard() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: isDark ? const Color(0xFF1E293B) : Colors.white,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFFF1F5F9)),
+        border: Border.all(color: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
+            color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.03),
             blurRadius: 10,
             offset: const Offset(0, 3),
           ),
@@ -877,6 +899,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       ),
       child: Column(
         children: [
+          // Push Notifications
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: Row(
@@ -885,17 +908,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   width: 40,
                   height: 40,
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF3E8FF),
+                    color: isDark ? const Color(0xFF312E81) : const Color(0xFFF3E8FF),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: const Icon(
+                  child: Icon(
                     Icons.notifications_active_rounded,
-                    color: Color(0xFF7C3AED),
+                    color: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF7C3AED),
                     size: 20,
                   ),
                 ),
                 const SizedBox(width: 14),
-                const Expanded(
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -904,19 +927,23 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         style: TextStyle(
                           fontSize: 15,
                           fontWeight: FontWeight.w700,
-                          color: Color(0xFF1E1B4B),
+                          color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
                         ),
                       ),
                       Text(
                         'Trip updates & recommendations',
-                        style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                        ),
                       ),
                     ],
                   ),
                 ),
                 Switch(
                   value: _notificationsEnabled,
-                  activeThumbColor: const Color(0xFF6366F1),
+                  activeThumbColor: const Color(0xFF818CF8),
+                  activeTrackColor: const Color(0xFF4338CA),
                   onChanged: (val) {
                     setState(() {
                       _notificationsEnabled = val;
@@ -927,34 +954,105 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
           ),
           _buildDivider(),
+
+          // Dark Theme Toggle (Requested under Push Notifications)
+          InkWell(
+            onTap: () {
+              AppTheme.toggleTheme();
+            },
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF312E81) : const Color(0xFFFEF3C7),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                      isDark ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
+                      color: isDark ? const Color(0xFFA5B4FC) : const Color(0xFFD97706),
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isDark ? 'Dark Theme' : 'Light Theme',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
+                          ),
+                        ),
+                        Text(
+                          isDark ? 'Tap to switch to Light Theme' : 'Tap to switch to Dark Theme',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: isDark,
+                    activeThumbColor: const Color(0xFF818CF8),
+                    activeTrackColor: const Color(0xFF4338CA),
+                    inactiveThumbColor: const Color(0xFF64748B),
+                    inactiveTrackColor: const Color(0xFFE2E8F0),
+                    onChanged: (val) {
+                      AppTheme.toggleTheme();
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+          _buildDivider(),
+
+          // Default Travel Region
           ListTile(
             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             leading: Container(
               width: 40,
               height: 40,
               decoration: BoxDecoration(
-                color: const Color(0xFFEEF2FF),
+                color: isDark ? const Color(0xFF312E81) : const Color(0xFFEEF2FF),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: const Icon(
+              child: Icon(
                 Icons.map_rounded,
-                color: Color(0xFF6366F1),
+                color: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF6366F1),
                 size: 20,
               ),
             ),
-            title: const Text(
+            title: Text(
               'Default Travel Region',
               style: TextStyle(
                 fontSize: 15,
                 fontWeight: FontWeight.w700,
-                color: Color(0xFF1E1B4B),
+                color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
               ),
             ),
-            subtitle: const Text(
+            subtitle: Text(
               'Karnataka, India',
-              style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+              style: TextStyle(
+                fontSize: 12,
+                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+              ),
             ),
-            trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: Color(0xFF94A3B8)),
+            trailing: Icon(
+              Icons.arrow_forward_ios_rounded,
+              size: 14,
+              color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+            ),
             onTap: () {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('App is currently set to Karnataka State.')),

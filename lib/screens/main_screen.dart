@@ -79,27 +79,30 @@ class _MainScreenState extends State<MainScreen> {
         }
       },
       child: Scaffold(
-        backgroundColor: const Color(0xFFFAFAFC),
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
         body: IndexedStack(
           index: _selectedIndex,
           children: pages,
         ),
         bottomNavigationBar: NavigationBar(
-          backgroundColor: Colors.white,
+          backgroundColor: Theme.of(context).cardColor,
           elevation: 4,
           selectedIndex: _selectedIndex,
           onDestinationSelected: _onNavigateTab,
-          indicatorColor: const Color(0xFFE0E7FF),
+          indicatorColor: Theme.of(context).brightness == Brightness.dark
+              ? const Color(0xFF312E81)
+              : const Color(0xFFE0E7FF),
           labelTextStyle: WidgetStateProperty.resolveWith((states) {
+            final isDark = Theme.of(context).brightness == Brightness.dark;
             if (states.contains(WidgetState.selected)) {
-              return const TextStyle(
-                color: Color(0xFF4338CA),
+              return TextStyle(
+                color: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF4338CA),
                 fontWeight: FontWeight.w800,
                 fontSize: 12.5,
               );
             }
-            return const TextStyle(
-              color: Color(0xFF334155),
+            return TextStyle(
+              color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF334155),
               fontWeight: FontWeight.w700,
               fontSize: 12,
             );

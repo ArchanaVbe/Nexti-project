@@ -43,15 +43,16 @@ class _ExploreScreenState extends State<ExploreScreen> {
   }
 
   void _showDestinationDetails(BuildContext context, DestinationItem destination) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => Container(
         height: MediaQuery.of(ctx).size.height * 0.75,
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF1E293B) : Colors.white,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
         ),
         child: Column(
           children: [
@@ -61,7 +62,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
               width: 40,
               height: 4,
               decoration: BoxDecoration(
-                color: Colors.grey.shade300,
+                color: isDark ? Colors.grey.shade700 : Colors.grey.shade300,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -82,7 +83,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                         fit: BoxFit.cover,
                         errorBuilder: (context, error, stackTrace) => Container(
                           height: 200,
-                          color: const Color(0xFFE0E7FF),
+                          color: isDark ? const Color(0xFF312E81) : const Color(0xFFE0E7FF),
                           child: const Icon(Icons.image, size: 50, color: Color(0xFF6366F1)),
                         ),
                       ),
@@ -96,10 +97,10 @@ class _ExploreScreenState extends State<ExploreScreen> {
                           children: [
                             Text(
                               destination.name,
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 24,
                                 fontWeight: FontWeight.w800,
-                                color: Color(0xFF1E1B4B),
+                                color: isDark ? Colors.white : const Color(0xFF1E1B4B),
                               ),
                             ),
                             const SizedBox(height: 4),
@@ -109,9 +110,9 @@ class _ExploreScreenState extends State<ExploreScreen> {
                                 const SizedBox(width: 4),
                                 Text(
                                   '${destination.district}, Karnataka',
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 14,
-                                    color: Color(0xFF64748B),
+                                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
                                     fontWeight: FontWeight.w600,
                                   ),
                                 ),
@@ -122,7 +123,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                           decoration: BoxDecoration(
-                            color: const Color(0xFFFEF3C7),
+                            color: isDark ? const Color(0xFF78350F) : const Color(0xFFFEF3C7),
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: Row(
@@ -131,9 +132,9 @@ class _ExploreScreenState extends State<ExploreScreen> {
                               const SizedBox(width: 4),
                               Text(
                                 destination.rating.toString(),
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontWeight: FontWeight.w800,
-                                  color: Color(0xFF92400E),
+                                  color: isDark ? const Color(0xFFFDE68A) : const Color(0xFF92400E),
                                 ),
                               ),
                             ],
@@ -144,19 +145,19 @@ class _ExploreScreenState extends State<ExploreScreen> {
                     const SizedBox(height: 16),
                     Text(
                       destination.description,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 14,
                         height: 1.5,
-                        color: Color(0xFF475569),
+                        color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569),
                       ),
                     ),
                     const SizedBox(height: 20),
-                    const Text(
+                    Text(
                       'Candidate POIs & Attractions',
                       style: TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.w800,
-                        color: Color(0xFF1E1B4B),
+                        color: isDark ? Colors.white : const Color(0xFF1E1B4B),
                       ),
                     ),
                     const SizedBox(height: 12),
@@ -165,9 +166,11 @@ class _ExploreScreenState extends State<ExploreScreen> {
                         margin: const EdgeInsets.only(bottom: 10),
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                         decoration: BoxDecoration(
-                          color: const Color(0xFFF8F9FE),
+                          color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8F9FE),
                           borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: const Color(0xFFE2E8F0)),
+                          border: Border.all(
+                            color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                          ),
                         ),
                         child: Row(
                           children: [
@@ -175,7 +178,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                               width: 36,
                               height: 36,
                               decoration: BoxDecoration(
-                                color: const Color(0xFFE0E7FF),
+                                color: isDark ? const Color(0xFF312E81) : const Color(0xFFE0E7FF),
                                 borderRadius: BorderRadius.circular(10),
                               ),
                               child: const Icon(
@@ -188,10 +191,10 @@ class _ExploreScreenState extends State<ExploreScreen> {
                             Expanded(
                               child: Text(
                                 attraction,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontSize: 15,
                                   fontWeight: FontWeight.w600,
-                                  color: Color(0xFF1E1B4B),
+                                  color: isDark ? Colors.white : const Color(0xFF1E1B4B),
                                 ),
                               ),
                             ),
@@ -213,10 +216,10 @@ class _ExploreScreenState extends State<ExploreScreen> {
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: isDark ? const Color(0xFF1E293B) : Colors.white,
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.05),
+                    color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.05),
                     blurRadius: 10,
                     offset: const Offset(0, -4),
                   ),
@@ -256,20 +259,21 @@ class _ExploreScreenState extends State<ExploreScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     final filtered = _filteredDestinations;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFFAFAFC),
+      backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFFAFAFC),
       appBar: AppBar(
-        backgroundColor: const Color(0xFFFAFAFC),
+        backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFFAFAFC),
         elevation: 0,
         centerTitle: false,
-        title: const Text(
+        title: Text(
           'Explore Karnataka',
           style: TextStyle(
             fontSize: 22,
             fontWeight: FontWeight.w800,
-            color: Color(0xFF1E1B4B),
+            color: isDark ? Colors.white : const Color(0xFF1E1B4B),
             letterSpacing: -0.4,
           ),
         ),
@@ -282,12 +286,14 @@ class _ExploreScreenState extends State<ExploreScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 8.0),
             child: Container(
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: isDark ? const Color(0xFF1E293B) : Colors.white,
                 borderRadius: BorderRadius.circular(24),
-                border: Border.all(color: const Color(0xFFE2E8F0)),
+                border: Border.all(
+                  color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                ),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.03),
+                    color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.03),
                     blurRadius: 10,
                     offset: const Offset(0, 3),
                   ),
@@ -296,8 +302,8 @@ class _ExploreScreenState extends State<ExploreScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
               child: TextField(
                 controller: _searchController,
-                style: const TextStyle(
-                  color: Color(0xFF0F172A),
+                style: TextStyle(
+                  color: isDark ? Colors.white : const Color(0xFF0F172A),
                   fontSize: 15,
                   fontWeight: FontWeight.w600,
                 ),
@@ -313,8 +319,8 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   focusedBorder: InputBorder.none,
                   icon: const Icon(Icons.search_rounded, color: Color(0xFF4F46E5), size: 22),
                   hintText: 'Search Karnataka destinations, districts, POIs...',
-                  hintStyle: const TextStyle(
-                    color: Color(0xFF64748B),
+                  hintStyle: TextStyle(
+                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
                     fontSize: 14,
                     fontWeight: FontWeight.w500,
                   ),
@@ -350,16 +356,20 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   label: Text(category),
                   selected: isSelected,
                   selectedColor: const Color(0xFF6366F1),
-                  backgroundColor: Colors.white,
+                  backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
                   labelStyle: TextStyle(
-                    color: isSelected ? Colors.white : const Color(0xFF475569),
+                    color: isSelected
+                        ? Colors.white
+                        : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF475569)),
                     fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
                     fontSize: 13,
                   ),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(16),
                     side: BorderSide(
-                      color: isSelected ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
+                      color: isSelected
+                          ? const Color(0xFF6366F1)
+                          : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
                     ),
                   ),
                   showCheckmark: false,
@@ -383,20 +393,20 @@ class _ExploreScreenState extends State<ExploreScreen> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text(
+                Text(
                   'Popular Karnataka Destinations',
                   style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w700,
-                    color: Color(0xFF1E1B4B),
+                    color: isDark ? Colors.white : const Color(0xFF1E1B4B),
                   ),
                 ),
                 Text(
                   '${filtered.length} places',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
-                    color: Color(0xFF64748B),
+                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
                   ),
                 ),
               ],
@@ -414,12 +424,12 @@ class _ExploreScreenState extends State<ExploreScreen> {
                       children: [
                         Icon(Icons.travel_explore_rounded, size: 64, color: Colors.grey.shade400),
                         const SizedBox(height: 12),
-                        const Text(
+                        Text(
                           'No destinations found',
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w700,
-                            color: Color(0xFF475569),
+                            color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569),
                           ),
                         ),
                         const SizedBox(height: 4),
@@ -442,7 +452,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                     itemCount: filtered.length,
                     itemBuilder: (context, index) {
                       final item = filtered[index];
-                      return _buildExploreCard(context, item);
+                      return _buildExploreCard(context, item, isDark);
                     },
                   ),
           ),
@@ -451,17 +461,19 @@ class _ExploreScreenState extends State<ExploreScreen> {
     );
   }
 
-  Widget _buildExploreCard(BuildContext context, DestinationItem item) {
+  Widget _buildExploreCard(BuildContext context, DestinationItem item, bool isDark) {
     return GestureDetector(
       onTap: () => _showDestinationDetails(context, item),
       child: Container(
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: isDark ? const Color(0xFF1E293B) : Colors.white,
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: const Color(0xFFF1F5F9)),
+          border: Border.all(
+            color: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9),
+          ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withValues(alpha: 0.04),
+              color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.04),
               blurRadius: 10,
               offset: const Offset(0, 4),
             ),
@@ -483,7 +495,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                       height: double.infinity,
                       fit: BoxFit.cover,
                       errorBuilder: (context, error, stackTrace) => Container(
-                        color: const Color(0xFFE0E7FF),
+                        color: isDark ? const Color(0xFF312E81) : const Color(0xFFE0E7FF),
                         child: Center(
                           child: Text(
                             item.name,
@@ -533,10 +545,10 @@ class _ExploreScreenState extends State<ExploreScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 4.0),
               child: Text(
                 item.name,
-                style: const TextStyle(
+                style: TextStyle(
                   fontWeight: FontWeight.w800,
                   fontSize: 15,
-                  color: Color(0xFF1E1B4B),
+                  color: isDark ? Colors.white : const Color(0xFF1E1B4B),
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -554,9 +566,9 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   Expanded(
                     child: Text(
                       '${item.district}, Karnataka',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 12,
-                        color: Color(0xFF64748B),
+                        color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
                         fontWeight: FontWeight.w500,
                       ),
                       maxLines: 1,

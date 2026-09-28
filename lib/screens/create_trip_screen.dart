@@ -1,8 +1,8 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'trip_details_screen.dart';
 
 class CreateTripScreen extends StatefulWidget {
   const CreateTripScreen({super.key});
@@ -16,6 +16,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   final TextEditingController _startDateController = TextEditingController();
   final TextEditingController _endDateController = TextEditingController();
   final TextEditingController _groupSizeController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
 
   int _currentStep = 1;
   final List<String> _selectedPlaces = [];
@@ -32,6 +33,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     _startDateController.dispose();
     _endDateController.dispose();
     _groupSizeController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -95,21 +97,26 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     }
   }
 
-  Widget _buildStepIndicator(String label, String number, bool isActive) {
+  Widget _buildStepIndicator(String label, String number, bool isActive, bool isDark) {
     return Column(
       children: [
         Container(
           width: 32,
           height: 32,
           decoration: BoxDecoration(
-            color: isActive ? const Color(0xFF6366F1) : const Color(0xFFF1F5F9),
+            color: isActive
+                ? const Color(0xFF6366F1)
+                : (isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9)),
             shape: BoxShape.circle,
+            border: !isActive && isDark
+                ? Border.all(color: const Color(0xFF334155))
+                : null,
           ),
           child: Center(
             child: Text(
               number,
               style: TextStyle(
-                color: isActive ? Colors.white : const Color(0xFF94A3B8),
+                color: isActive ? Colors.white : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF94A3B8)),
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -120,7 +127,9 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           label,
           style: TextStyle(
             fontSize: 12,
-            color: isActive ? const Color(0xFF6366F1) : const Color(0xFF94A3B8),
+            color: isActive
+                ? (isDark ? const Color(0xFF818CF8) : const Color(0xFF6366F1))
+                : (isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8)),
             fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
           ),
         ),
@@ -136,16 +145,17 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     bool readOnly = false,
     VoidCallback? onTap,
     TextInputType? keyboardType,
+    required bool isDark,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           label,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.bold,
-            color: Color(0xFF334155),
+            color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
           ),
         ),
         const SizedBox(height: 8),
@@ -154,31 +164,38 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           readOnly: readOnly,
           onTap: onTap,
           keyboardType: keyboardType,
-          style: const TextStyle(
-            color: Color(0xFF0F172A),
+          style: TextStyle(
+            color: isDark ? Colors.white : const Color(0xFF0F172A),
             fontWeight: FontWeight.w500,
           ),
           decoration: InputDecoration(
             hintText: hint,
-            hintStyle: const TextStyle(
-              color: Color(0xFF94A3B8),
+            hintStyle: TextStyle(
+              color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
               fontWeight: FontWeight.normal,
             ),
-            prefixIcon: Icon(icon, color: const Color(0xFF64748B)),
+            prefixIcon: Icon(
+              icon,
+              color: isDark ? const Color(0xFF818CF8) : const Color(0xFF64748B),
+            ),
             filled: true,
-            fillColor: Colors.white,
+            fillColor: isDark ? const Color(0xFF1E293B) : Colors.white,
             contentPadding: const EdgeInsets.symmetric(vertical: 16),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+              borderSide: BorderSide(
+                color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+              ),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+              borderSide: BorderSide(
+                color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+              ),
             ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFF6366F1), width: 2),
+            focusedBorder: const OutlineInputBorder(
+              borderRadius: BorderRadius.all(Radius.circular(12)),
+              borderSide: BorderSide(color: Color(0xFF6366F1), width: 2),
             ),
           ),
         ),
@@ -188,6 +205,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   }
 
   Future<void> _selectDate(BuildContext context, TextEditingController controller) async {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     final DateTime? picked = await showDatePicker(
       context: context,
       initialDate: DateTime.now(),
@@ -196,11 +214,18 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       builder: (context, child) {
         return Theme(
           data: Theme.of(context).copyWith(
-            colorScheme: const ColorScheme.light(
-              primary: Color(0xFF6366F1), // header background color
-              onPrimary: Colors.white, // header text color
-              onSurface: Color(0xFF0F172A), // body text color
-            ),
+            colorScheme: isDark
+                ? const ColorScheme.dark(
+                    primary: Color(0xFF6366F1),
+                    onPrimary: Colors.white,
+                    surface: Color(0xFF1E293B),
+                    onSurface: Colors.white,
+                  )
+                : const ColorScheme.light(
+                    primary: Color(0xFF6366F1), // header background color
+                    onPrimary: Colors.white, // header text color
+                    onSurface: Color(0xFF0F172A), // body text color
+                  ),
           ),
           child: child!,
         );
@@ -213,16 +238,16 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     }
   }
 
-  Widget _buildStep1() {
+  Widget _buildStep1(bool isDark) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        Text(
           'Trip Details',
           style: TextStyle(
             fontSize: 22,
             fontWeight: FontWeight.w800,
-            color: Color(0xFF0F172A),
+            color: isDark ? Colors.white : const Color(0xFF0F172A),
           ),
         ),
         const SizedBox(height: 24),
@@ -232,6 +257,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           icon: Icons.location_on_outlined,
           controller: _destinationController,
           readOnly: !_isHost,
+          isDark: isDark,
           onTap: () {
             if (!_isHost) {
               ScaffoldMessenger.of(context).showSnackBar(
@@ -249,6 +275,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           icon: Icons.calendar_today_outlined,
           controller: _startDateController,
           readOnly: true,
+          isDark: isDark,
           onTap: () => _selectDate(context, _startDateController),
         ),
         _buildTextField(
@@ -257,6 +284,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           icon: Icons.calendar_today_outlined,
           controller: _endDateController,
           readOnly: true,
+          isDark: isDark,
           onTap: () => _selectDate(context, _endDateController),
         ),
         _buildTextField(
@@ -265,40 +293,49 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           icon: Icons.group_outlined,
           controller: _groupSizeController,
           keyboardType: TextInputType.number,
+          isDark: isDark,
         ),
         const SizedBox(height: 40),
       ],
     );
   }
 
-  Widget _buildStep2() {
+  Widget _buildStep2(bool isDark) {
     final suggestedPlaces = _suggestedPlaces;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           'Preferences in ${_destinationController.text.isNotEmpty ? _destinationController.text : "your destination"}',
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 22,
             fontWeight: FontWeight.w800,
-            color: Color(0xFF0F172A),
+            color: isDark ? Colors.white : const Color(0xFF0F172A),
           ),
         ),
         const SizedBox(height: 8),
-        const Text(
+        Text(
           'Select the places you wish to visit',
-          style: TextStyle(fontSize: 14, color: Color(0xFF64748B)),
+          style: TextStyle(
+            fontSize: 14,
+            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+          ),
         ),
         const SizedBox(height: 24),
         if (_isLoadingPlaces)
-          const Center(
+          Center(
             child: Padding(
-              padding: EdgeInsets.all(32.0),
+              padding: const EdgeInsets.all(32.0),
               child: Column(
                 children: [
-                  CircularProgressIndicator(color: Color(0xFF6366F1)),
-                  SizedBox(height: 16),
-                  Text('Discovering real places from Google Maps...', style: TextStyle(color: Color(0xFF64748B))),
+                  const CircularProgressIndicator(color: Color(0xFF6366F1)),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Discovering real places from Google Maps...',
+                    style: TextStyle(
+                      color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -306,196 +343,145 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         else
           ...suggestedPlaces.entries.map((category) {
             return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                category.key,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF334155),
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  category.key,
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: category.value.map((place) {
-                  final isSelected = _selectedPlaces.contains(place);
-                  return FilterChip(
-                    label: Text(place),
-                    selected: isSelected,
-                    onSelected: (selected) {
-                      setState(() {
-                        if (selected) {
-                          _selectedPlaces.add(place);
-                        } else {
-                          _selectedPlaces.remove(place);
-                        }
-                      });
-                    },
-                    backgroundColor: Colors.white,
-                    selectedColor: const Color(0xFF6366F1).withValues(alpha: 0.1),
-                    checkmarkColor: const Color(0xFF6366F1),
-                    labelStyle: TextStyle(
-                      color: isSelected ? const Color(0xFF6366F1) : const Color(0xFF64748B),
-                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(20),
-                      side: BorderSide(
-                        color: isSelected ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: category.value.map((place) {
+                    final isSelected = _selectedPlaces.contains(place);
+                    return FilterChip(
+                      label: Text(place),
+                      selected: isSelected,
+                      onSelected: (selected) {
+                        setState(() {
+                          if (selected) {
+                            _selectedPlaces.add(place);
+                          } else {
+                            _selectedPlaces.remove(place);
+                          }
+                        });
+                      },
+                      backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+                      selectedColor: const Color(0xFF6366F1).withValues(alpha: isDark ? 0.35 : 0.1),
+                      checkmarkColor: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF6366F1),
+                      labelStyle: TextStyle(
+                        color: isSelected
+                            ? (isDark ? const Color(0xFFA5B4FC) : const Color(0xFF6366F1))
+                            : (isDark ? const Color(0xFFCBD5E1) : const Color(0xFF64748B)),
+                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
                       ),
-                    ),
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 24),
-            ],
-          );
-        }),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                        side: BorderSide(
+                          color: isSelected
+                              ? const Color(0xFF6366F1)
+                              : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 24),
+              ],
+            );
+          }),
         const SizedBox(height: 16),
       ],
     );
   }
 
-  Widget _buildStep3() {
+  Widget _buildStep3(bool isDark) {
+    final previewTrip = {
+      'id': 'preview_trip',
+      'destination': _destinationController.text.trim().isNotEmpty
+          ? _destinationController.text.trim()
+          : 'Karnataka',
+      'startDate': _startDateController.text.trim().isNotEmpty
+          ? _startDateController.text.trim()
+          : '28/9/2026',
+      'endDate': _endDateController.text.trim().isNotEmpty
+          ? _endDateController.text.trim()
+          : '30/9/2026',
+      'groupSize': _groupSizeController.text.trim().isNotEmpty
+          ? _groupSizeController.text.trim()
+          : '1',
+      'places': _selectedPlaces,
+    };
+
+    return TripDetailsScreen(
+      trip: previewTrip,
+      isEmbedded: true,
+      scrollController: _scrollController,
+    );
+  }
+
+  Widget _buildStep4(bool isDark) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        Text(
           'Group Planning',
           style: TextStyle(
             fontSize: 22,
             fontWeight: FontWeight.w800,
-            color: Color(0xFF0F172A),
+            color: isDark ? Colors.white : const Color(0xFF0F172A),
           ),
         ),
         const SizedBox(height: 8),
-        const Text(
+        Text(
           'Invite your friends to collaborate on this trip.',
-          style: TextStyle(fontSize: 14, color: Color(0xFF64748B)),
+          style: TextStyle(
+            fontSize: 14,
+            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+          ),
         ),
         const SizedBox(height: 32),
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(24),
           decoration: BoxDecoration(
-            color: const Color(0xFFF8FAFC),
+            color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0xFFE2E8F0)),
+            border: Border.all(
+              color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+            ),
           ),
-          child: const Column(
+          child: Column(
             children: [
-              Icon(Icons.group_add_outlined, size: 48, color: Color(0xFF94A3B8)),
-              SizedBox(height: 16),
+              Icon(
+                Icons.group_add_outlined,
+                size: 48,
+                color: isDark ? const Color(0xFF818CF8) : const Color(0xFF94A3B8),
+              ),
+              const SizedBox(height: 16),
               Text(
                 'Group Features Coming Soon',
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.bold,
-                  color: Color(0xFF475569),
+                  color: isDark ? Colors.white : const Color(0xFF475569),
                 ),
               ),
-              SizedBox(height: 8),
+              const SizedBox(height: 8),
               Text(
                 'Pending integration from collaborator branch. Includes Trip Code, URL sharing, and QR Codes.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 14,
-                  color: Color(0xFF64748B),
+                  color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
                 ),
               ),
             ],
-          ),
-        ),
-        const SizedBox(height: 40),
-      ],
-    );
-  }
-
-  Widget _buildStep4() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Show trip',
-          style: TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.w800,
-            color: Color(0xFF0F172A),
-          ),
-        ),
-        const SizedBox(height: 8),
-        const Text(
-          'Here is your finalized plan.',
-          style: TextStyle(fontSize: 14, color: Color(0xFF64748B)),
-        ),
-        const SizedBox(height: 32),
-        // Trip details summary
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0xFFE2E8F0)),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Destination: ${_destinationController.text}',
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Dates: ${_startDateController.text} - ${_endDateController.text}',
-                style: const TextStyle(fontSize: 14, color: Color(0xFF475569)),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Group Size: ${_groupSizeController.text}',
-                style: const TextStyle(fontSize: 14, color: Color(0xFF475569)),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Selected Places:',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: _selectedPlaces.map((place) => Chip(
-                  label: Text(place, style: const TextStyle(fontSize: 12)),
-                  backgroundColor: const Color(0xFFF1F5F9),
-                  side: BorderSide.none,
-                )).toList(),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 24),
-        // Google Map Placeholder
-        Container(
-          width: double.infinity,
-          height: 250,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0xFFE2E8F0)),
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(15),
-            child: const GoogleMap(
-              initialCameraPosition: CameraPosition(
-                target: LatLng(15.3173, 75.7139), // Coordinates for Karnataka
-                zoom: 6,
-              ),
-              mapType: MapType.normal,
-              myLocationButtonEnabled: false,
-              zoomControlsEnabled: false,
-            ),
           ),
         ),
         const SizedBox(height: 40),
@@ -505,27 +491,36 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.white,
+        backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Color(0xFF0F172A), size: 20),
+          icon: Icon(
+            Icons.arrow_back_ios_new_rounded,
+            color: isDark ? Colors.white : const Color(0xFF0F172A),
+            size: 20,
+          ),
           onPressed: () {
             if (_currentStep > 1) {
               setState(() {
                 _currentStep--;
               });
+              if (_scrollController.hasClients) {
+                _scrollController.jumpTo(0);
+              }
             } else {
               Navigator.pop(context);
             }
           },
         ),
-        title: const Text(
+        title: Text(
           'Create Trip',
           style: TextStyle(
-            color: Color(0xFF0F172A),
+            color: isDark ? Colors.white : const Color(0xFF0F172A),
             fontSize: 20,
             fontWeight: FontWeight.w800,
           ),
@@ -537,47 +532,59 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           children: [
             Expanded(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24.0),
+                controller: _scrollController,
+                padding: _currentStep == 3 ? EdgeInsets.zero : const EdgeInsets.all(24.0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     // Stepper
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        _buildStepIndicator('Details', '1', _currentStep >= 1),
-                        Expanded(
-                          child: Container(
-                            height: 2,
-                            color: _currentStep >= 2 ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
-                            margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
+                    Padding(
+                      padding: _currentStep == 3
+                          ? const EdgeInsets.fromLTRB(24, 16, 24, 16)
+                          : EdgeInsets.zero,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          _buildStepIndicator('Details', '1', _currentStep >= 1, isDark),
+                          Expanded(
+                            child: Container(
+                              height: 2,
+                              color: _currentStep >= 2
+                                  ? const Color(0xFF6366F1)
+                                  : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                              margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
+                            ),
                           ),
-                        ),
-                        _buildStepIndicator('Preferences', '2', _currentStep >= 2),
-                        Expanded(
-                          child: Container(
-                            height: 2,
-                            color: _currentStep >= 3 ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
-                            margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
+                          _buildStepIndicator('Preferences', '2', _currentStep >= 2, isDark),
+                          Expanded(
+                            child: Container(
+                              height: 2,
+                              color: _currentStep >= 3
+                                  ? const Color(0xFF6366F1)
+                                  : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                              margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
+                            ),
                           ),
-                        ),
-                        _buildStepIndicator('Group', '3', _currentStep >= 3),
-                        Expanded(
-                          child: Container(
-                            height: 2,
-                            color: _currentStep >= 4 ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
-                            margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
+                          _buildStepIndicator('Show trip', '3', _currentStep >= 3, isDark),
+                          Expanded(
+                            child: Container(
+                              height: 2,
+                              color: _currentStep >= 4
+                                  ? const Color(0xFF6366F1)
+                                  : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                              margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
+                            ),
                           ),
-                        ),
-                        _buildStepIndicator('Show trip', '4', _currentStep >= 4),
-                      ],
+                          _buildStepIndicator('Group', '4', _currentStep >= 4, isDark),
+                        ],
+                      ),
                     ),
-                    const SizedBox(height: 32),
+                    if (_currentStep != 3) const SizedBox(height: 32),
 
-                    if (_currentStep == 1) _buildStep1(),
-                    if (_currentStep == 2) _buildStep2(),
-                    if (_currentStep == 3) _buildStep3(),
-                    if (_currentStep == 4) _buildStep4(),
+                    if (_currentStep == 1) _buildStep1(isDark),
+                    if (_currentStep == 2) _buildStep2(isDark),
+                    if (_currentStep == 3) _buildStep3(isDark),
+                    if (_currentStep == 4) _buildStep4(isDark),
                   ],
                 ),
               ),
@@ -587,10 +594,10 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             Container(
               padding: const EdgeInsets.all(24.0),
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: isDark ? const Color(0xFF1E293B) : Colors.white,
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.05),
+                    color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.05),
                     blurRadius: 10,
                     offset: const Offset(0, -4),
                   ),
@@ -608,6 +615,9 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                       setState(() {
                         _currentStep++;
                       });
+                      if (_scrollController.hasClients) {
+                        _scrollController.jumpTo(0);
+                      }
                     } else {
                       // Save Trip
                       final prefs = await SharedPreferences.getInstance();
@@ -615,10 +625,18 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                       
                       final tripData = {
                         'id': DateTime.now().millisecondsSinceEpoch.toString(),
-                        'destination': _destinationController.text,
-                        'startDate': _startDateController.text,
-                        'endDate': _endDateController.text,
-                        'groupSize': _groupSizeController.text,
+                        'destination': _destinationController.text.trim().isNotEmpty
+                            ? _destinationController.text.trim()
+                            : 'Karnataka',
+                        'startDate': _startDateController.text.trim().isNotEmpty
+                            ? _startDateController.text.trim()
+                            : '28/9/2026',
+                        'endDate': _endDateController.text.trim().isNotEmpty
+                            ? _endDateController.text.trim()
+                            : '30/9/2026',
+                        'groupSize': _groupSizeController.text.trim().isNotEmpty
+                            ? _groupSizeController.text.trim()
+                            : '1',
                         'places': _selectedPlaces,
                       };
                       

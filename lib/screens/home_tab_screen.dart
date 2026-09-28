@@ -26,7 +26,7 @@ class HomeTabScreen extends StatelessWidget {
     final destinations = DestinationItem.sampleDestinations;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFFAFAFC),
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: SafeArea(
         child: SingleChildScrollView(
           physics: const BouncingScrollPhysics(),
@@ -40,11 +40,11 @@ class HomeTabScreen extends StatelessWidget {
               const SizedBox(height: 20),
 
               // Greeting & Subtitle
-              _buildGreeting(),
+              _buildGreeting(context),
               const SizedBox(height: 20),
 
               // Search Bar
-              _buildSearchBar(),
+              _buildSearchBar(context),
               const SizedBox(height: 20),
 
               // Quick Actions (Create Trip & Saved Places - My Trips and Profile are in footer)
@@ -66,6 +66,8 @@ class HomeTabScreen extends StatelessWidget {
   }
 
   Widget _buildTopHeader(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
@@ -81,12 +83,12 @@ class HomeTabScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            const Text(
+            Text(
               'NexTripia-AI',
               style: TextStyle(
                 fontSize: 21,
                 fontWeight: FontWeight.w800,
-                color: Color(0xFF1E1B4B),
+                color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
                 letterSpacing: -0.4,
               ),
             ),
@@ -96,9 +98,9 @@ class HomeTabScreen extends StatelessWidget {
         Row(
           children: [
             IconButton(
-              icon: const Icon(
+              icon: Icon(
                 Icons.notifications_none_rounded,
-                color: Color(0xFF1E1B4B),
+                color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
                 size: 26,
               ),
               onPressed: () {
@@ -130,8 +132,10 @@ class HomeTabScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildGreeting() {
-    return const Column(
+  Widget _buildGreeting(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
@@ -139,57 +143,63 @@ class HomeTabScreen extends StatelessWidget {
           style: TextStyle(
             fontSize: 24,
             fontWeight: FontWeight.w800,
-            color: Color(0xFF1E1B4B),
+            color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
             letterSpacing: -0.5,
           ),
         ),
-        SizedBox(height: 4),
+        const SizedBox(height: 4),
         Text(
           'Plan. Explore. Travel Together.',
           style: TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.w600,
-            color: Color(0xFF334155),
+            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF334155),
           ),
         ),
       ],
     );
   }
 
-  Widget _buildSearchBar() {
+  Widget _buildSearchBar(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: isDark ? const Color(0xFF1E293B) : Colors.white,
         borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: const Color(0xFFCBD5E1), width: 1.2),
+        border: Border.all(
+          color: isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
+          width: 1.2,
+        ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
+            color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.03),
             blurRadius: 10,
             offset: const Offset(0, 3),
           ),
         ],
       ),
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 2),
-      child: const TextField(
+      child: TextField(
         style: TextStyle(
-          color: Color(0xFF0F172A),
+          color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
           fontSize: 15,
           fontWeight: FontWeight.w600,
         ),
-        cursorColor: Color(0xFF6366F1),
+        cursorColor: const Color(0xFF6366F1),
         decoration: InputDecoration(
           border: InputBorder.none,
           enabledBorder: InputBorder.none,
           focusedBorder: InputBorder.none,
-          icon: Icon(
+          filled: false,
+          icon: const Icon(
             Icons.search_rounded,
             color: Color(0xFF4F46E5),
             size: 22,
           ),
           hintText: 'Where in Karnataka do you want to go?',
           hintStyle: TextStyle(
-            color: Color(0xFF64748B),
+            color: isDark ? const Color(0xFF64748B) : const Color(0xFF64748B),
             fontSize: 15,
             fontWeight: FontWeight.w500,
           ),
@@ -198,35 +208,8 @@ class HomeTabScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildQuickActions(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: _buildWideActionCard(
-            icon: Icons.groups_rounded,
-            iconColor: const Color(0xFF7C3AED),
-            bgColor: const Color(0xFFF3E8FF),
-            label: 'Create Trip',
-            subtitle: 'Plan with friends',
-            onTap: () => _navigateToCreateTrip(context),
-          ),
-        ),
-        const SizedBox(width: 14),
-        Expanded(
-          child: _buildWideActionCard(
-            icon: Icons.bookmark_rounded,
-            iconColor: const Color(0xFF16A34A),
-            bgColor: const Color(0xFFDCFCE7),
-            label: 'Saved Places',
-            subtitle: 'Your bookmarks',
-            onTap: () => onNavigateTab?.call(1), // Navigate to Trips
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildWideActionCard({
+  Widget _buildWideActionCard(
+    BuildContext context, {
     required IconData icon,
     required Color iconColor,
     required Color bgColor,
@@ -234,18 +217,22 @@ class HomeTabScreen extends StatelessWidget {
     required String subtitle,
     required VoidCallback onTap,
   }) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: isDark ? const Color(0xFF1E293B) : Colors.white,
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: const Color(0xFFF1F5F9)),
+          border: Border.all(
+            color: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9),
+          ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withValues(alpha: 0.03),
+              color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.03),
               blurRadius: 10,
               offset: const Offset(0, 3),
             ),
@@ -257,7 +244,7 @@ class HomeTabScreen extends StatelessWidget {
               width: 48,
               height: 48,
               decoration: BoxDecoration(
-                color: bgColor,
+                color: isDark ? bgColor.withValues(alpha: 0.2) : bgColor,
                 borderRadius: BorderRadius.circular(16),
               ),
               child: Center(
@@ -272,10 +259,10 @@ class HomeTabScreen extends StatelessWidget {
                 children: [
                   Text(
                     label,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w700,
-                      color: Color(0xFF1E1B4B),
+                      color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
                     ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -283,9 +270,9 @@ class HomeTabScreen extends StatelessWidget {
                   const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 11,
-                      color: Color(0xFF64748B),
+                      color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
                       fontWeight: FontWeight.w500,
                     ),
                     maxLines: 1,
@@ -300,16 +287,48 @@ class HomeTabScreen extends StatelessWidget {
     );
   }
 
+  Widget _buildQuickActions(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: _buildWideActionCard(
+            context,
+            icon: Icons.groups_rounded,
+            iconColor: const Color(0xFF7C3AED),
+            bgColor: const Color(0xFFF3E8FF),
+            label: 'Create Trip',
+            subtitle: 'Plan with friends',
+            onTap: () => _navigateToCreateTrip(context),
+          ),
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: _buildWideActionCard(
+            context,
+            icon: Icons.bookmark_rounded,
+            iconColor: const Color(0xFF16A34A),
+            bgColor: const Color(0xFFDCFCE7),
+            label: 'Saved Places',
+            subtitle: 'Your bookmarks',
+            onTap: () => onNavigateTab?.call(1), // Navigate to Trips
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildDestinationsHeader(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        const Text(
+        Text(
           'Popular Destinations',
           style: TextStyle(
             fontSize: 19,
             fontWeight: FontWeight.w800,
-            color: Color(0xFF1E1B4B),
+            color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
             letterSpacing: -0.3,
           ),
         ),
@@ -349,15 +368,19 @@ class HomeTabScreen extends StatelessWidget {
   }
 
   Widget _buildDestinationCard(BuildContext context, DestinationItem item) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Container(
       width: 144,
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: isDark ? const Color(0xFF1E293B) : Colors.white,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFFF1F5F9)),
+        border: Border.all(
+          color: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9),
+        ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
+            color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.04),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -405,7 +428,7 @@ class HomeTabScreen extends StatelessWidget {
                 return Container(
                   width: double.infinity,
                   height: 120,
-                  color: const Color(0xFFF1F5F9),
+                  color: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9),
                   child: const Center(
                     child: SizedBox(
                       width: 20,
@@ -428,10 +451,10 @@ class HomeTabScreen extends StatelessWidget {
               children: [
                 Text(
                   item.name,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontWeight: FontWeight.w800,
                     fontSize: 15,
-                    color: Color(0xFF1E1B4B),
+                    color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -448,9 +471,9 @@ class HomeTabScreen extends StatelessWidget {
                     Expanded(
                       child: Text(
                         '${item.district}, Karnataka',
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 12,
-                          color: Color(0xFF334155),
+                          color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF334155),
                           fontWeight: FontWeight.w600,
                         ),
                         maxLines: 1,
