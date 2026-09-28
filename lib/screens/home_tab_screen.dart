@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/destination.dart';
 import 'create_trip_screen.dart';
+import '../qr_scanner_screen.dart';
 
 class HomeTabScreen extends StatelessWidget {
   final void Function(int index)? onNavigateTab;
@@ -120,14 +121,50 @@ class HomeTabScreen extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 24),
-                  Text(
-                    'Enter Trip Code',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
-                      letterSpacing: 0.2,
-                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Enter Trip Code',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                      InkWell(
+                        onTap: () async {
+                          final scannedCode = await Navigator.push<String>(
+                            context,
+                            MaterialPageRoute(builder: (context) => const QrScannerScreen()),
+                          );
+                          if (scannedCode != null && scannedCode.isNotEmpty) {
+                            codeController.text = scannedCode;
+                            setModalState(() {});
+                          }
+                        },
+                        borderRadius: BorderRadius.circular(8),
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.qr_code_scanner_rounded, size: 16, color: Color(0xFF6366F1)),
+                              SizedBox(width: 4),
+                              Text(
+                                'Scan QR',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFF6366F1),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 10),
                   TextField(
@@ -165,7 +202,21 @@ class HomeTabScreen extends StatelessWidget {
                                 setModalState(() {});
                               },
                             )
-                          else
+                          else ...[
+                            IconButton(
+                              tooltip: 'Scan QR Code',
+                              icon: const Icon(Icons.qr_code_scanner_rounded, size: 20, color: Color(0xFF6366F1)),
+                              onPressed: () async {
+                                final scannedCode = await Navigator.push<String>(
+                                  context,
+                                  MaterialPageRoute(builder: (context) => const QrScannerScreen()),
+                                );
+                                if (scannedCode != null && scannedCode.isNotEmpty) {
+                                  codeController.text = scannedCode;
+                                  setModalState(() {});
+                                }
+                              },
+                            ),
                             TextButton.icon(
                               onPressed: () async {
                                 final data = await Clipboard.getData('text/plain');
@@ -188,6 +239,7 @@ class HomeTabScreen extends StatelessWidget {
                                 ),
                               ),
                             ),
+                          ],
                           const SizedBox(width: 4),
                         ],
                       ),

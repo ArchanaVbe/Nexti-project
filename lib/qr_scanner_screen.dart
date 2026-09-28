@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:image_picker/image_picker.dart';
 
 class QrScannerScreen extends StatefulWidget {
   const QrScannerScreen({super.key});
@@ -24,46 +25,64 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
     if (_isProcessing) return;
     setState(() => _isProcessing = true);
 
-    // 1. Verify app prefix
-    if (!rawCode.startsWith('nexttripia:join:')) {
-      _showFeedback('Invalid NextTripia QR code.', isError: true);
-      await Future.delayed(const Duration(seconds: 2));
-      if (mounted) setState(() => _isProcessing = false);
-      return;
-    }
+    String tripId = rawCode.trim();
 
-    final String tripId = rawCode.replaceFirst('nexttripia:join:', '').trim();
-    final user = FirebaseAuth.instance.currentUser;
-
-    if (user == null) {
-      _showFeedback('You must be logged in to join.', isError: true);
-      if (mounted) setState(() => _isProcessing = false);
-      return;
-    }
-
-    try {
-      final tripRef = FirebaseFirestore.instance.collection('trips').doc(tripId);
-      final tripDoc = await tripRef.get();
-
-      if (!tripDoc.exists) {
-        _showFeedback('Trip does not exist or has expired.', isError: true);
-        await Future.delayed(const Duration(seconds: 2));
-        if (mounted) setState(() => _isProcessing = false);
-        return;
+    // 1. Extract trip ID from prefix or URL
+    if (tripId.startsWith('nexttripia:join:')) {
+      tripId = tripId.replaceFirst('nexttripia:join:', '').trim();
+    } else if (tripId.contains('code=')) {
+      final uri = Uri.tryParse(tripId);
+      if (uri != null && uri.queryParameters['code'] != null) {
+        tripId = uri.queryParameters['code']!;
       }
+    }
 
-      // 2. Add current user UID to the trip members array in Cloud Firestore
-      await tripRef.update({
-        'members': FieldValue.arrayUnion([user.uid]),
-      });
-
-      if (!mounted) return;
-      _showFeedback('Successfully joined the trip!');
-      Navigator.pop(context, tripId);
-    } catch (e) {
-      _showFeedback('Failed to join trip: $e', isError: true);
+    if (tripId.isEmpty) {
+      _showFeedback('Invalid QR code format.', isError: true);
       await Future.delayed(const Duration(seconds: 2));
       if (mounted) setState(() => _isProcessing = false);
+      return;
+    }
+
+    // 2. Optionally update Firestore members if logged in
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      try {
+        final tripRef =
+            FirebaseFirestore.instance.collection('trips').doc(tripId);
+        final tripDoc = await tripRef.get();
+        if (tripDoc.exists) {
+          await tripRef.update({
+            'members': FieldValue.arrayUnion([user.uid]),
+          });
+        }
+      } catch (_) {}
+    }
+
+    if (!mounted) return;
+    _showFeedback('Trip code scanned: $tripId');
+    // Return extracted tripId to caller so it automatically fills the input field
+    Navigator.pop(context, tripId);
+  }
+
+  Future<void> _pickImageFromGallery() async {
+    try {
+      final picker = ImagePicker();
+      final pickedFile = await picker.pickImage(source: ImageSource.gallery);
+      if (pickedFile == null) return;
+
+      final capture = await _scannerController.analyzeImage(pickedFile.path);
+      if (capture != null && capture.barcodes.isNotEmpty) {
+        for (final barcode in capture.barcodes) {
+          if (barcode.rawValue != null && barcode.rawValue!.isNotEmpty) {
+            _handleBarcodeDetection(barcode.rawValue!);
+            return;
+          }
+        }
+      }
+      _showFeedback('No QR code found in selected image.', isError: true);
+    } catch (e) {
+      _showFeedback('Could not scan image: $e', isError: true);
     }
   }
 
@@ -91,10 +110,17 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
         iconTheme: const IconThemeData(color: Colors.black87),
         actions: [
           IconButton(
+            tooltip: 'Pick image from gallery',
+            icon: const Icon(Icons.photo_library_outlined),
+            onPressed: _pickImageFromGallery,
+          ),
+          IconButton(
+            tooltip: 'Toggle Flash',
             icon: const Icon(Icons.flash_on),
             onPressed: () => _scannerController.toggleTorch(),
           ),
           IconButton(
+            tooltip: 'Switch Camera',
             icon: const Icon(Icons.cameraswitch),
             onPressed: () => _scannerController.switchCamera(),
           ),
@@ -108,7 +134,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
             onDetect: (capture) {
               final barcodes = capture.barcodes;
               for (final barcode in barcodes) {
-                if (barcode.rawValue != null) {
+                if (barcode.rawValue != null && barcode.rawValue!.isNotEmpty) {
                   _handleBarcodeDetection(barcode.rawValue!);
                   break;
                 }
@@ -120,8 +146,22 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
             width: 250,
             height: 250,
             decoration: BoxDecoration(
-              border: Border.all(color: Colors.white, width: 2.5),
+              border: Border.all(color: const Color(0xFF6366F1), width: 3),
               borderRadius: BorderRadius.circular(20),
+            ),
+          ),
+          Positioned(
+            bottom: 40,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.7),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: const Text(
+                'Align QR code within the frame or pick from gallery',
+                style: TextStyle(color: Colors.white, fontSize: 13),
+              ),
             ),
           ),
           if (_isProcessing)
