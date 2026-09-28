@@ -747,13 +747,13 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             Expanded(
               child: SingleChildScrollView(
                 controller: _scrollController,
-                padding: _currentStep == 3 ? EdgeInsets.zero : const EdgeInsets.all(24.0),
+                padding: _currentStep == 4 ? EdgeInsets.zero : const EdgeInsets.all(24.0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     // Stepper
                     Padding(
-                      padding: _currentStep == 3
+                      padding: _currentStep == 4
                           ? const EdgeInsets.fromLTRB(24, 16, 24, 16)
                           : EdgeInsets.zero,
                       child: Row(
@@ -769,7 +769,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                               margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
                             ),
                           ),
-                          _buildStepIndicator('Preferences', '2', _currentStep >= 2, isDark),
+                          _buildStepIndicator('Group', '2', _currentStep >= 2, isDark),
                           Expanded(
                             child: Container(
                               height: 2,
@@ -779,7 +779,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                               margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
                             ),
                           ),
-                          _buildStepIndicator('Show trip', '3', _currentStep >= 3, isDark),
+                          _buildStepIndicator('Preferences', '3', _currentStep >= 3, isDark),
                           Expanded(
                             child: Container(
                               height: 2,
@@ -789,16 +789,16 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                               margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
                             ),
                           ),
-                          _buildStepIndicator('Group', '4', _currentStep >= 4, isDark),
+                          _buildStepIndicator('Show trip', '4', _currentStep >= 4, isDark),
                         ],
                       ),
                     ),
-                    if (_currentStep != 3) const SizedBox(height: 32),
+                    if (_currentStep != 4) const SizedBox(height: 32),
 
                     if (_currentStep == 1) _buildStep1(isDark),
-                    if (_currentStep == 2) _buildStep2(isDark),
-                    if (_currentStep == 3) _buildStep3(isDark),
-                    if (_currentStep == 4) _buildStep4(isDark),
+                    if (_currentStep == 2) _buildStep4(isDark),
+                    if (_currentStep == 3) _buildStep2(isDark),
+                    if (_currentStep == 4) _buildStep3(isDark),
                   ],
                 ),
               ),
