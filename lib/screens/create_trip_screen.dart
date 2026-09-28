@@ -61,13 +61,6 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     }
 
     if (_isHost) {
-      if (_destinationController.text.isEmpty) {
-        _destinationController.text = 'Karnataka';
-        _startDateController.text = '28/9/2026';
-        _endDateController.text = '30/9/2026';
-        _groupSizeController.text = '4';
-        _fetchPlacesFromGoogle('Karnataka');
-      }
       _syncTripToFirestore(isInitial: true);
     }
 
@@ -104,18 +97,10 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
       final Map<String, dynamic> updateData = {
         'tripCode': _tripCode,
-        'destination': _destinationController.text.trim().isNotEmpty
-            ? _destinationController.text.trim()
-            : 'Karnataka',
-        'startDate': _startDateController.text.trim().isNotEmpty
-            ? _startDateController.text.trim()
-            : '28/9/2026',
-        'endDate': _endDateController.text.trim().isNotEmpty
-            ? _endDateController.text.trim()
-            : '30/9/2026',
-        'groupSize': _groupSizeController.text.trim().isNotEmpty
-            ? _groupSizeController.text.trim()
-            : '4',
+        'destination': _destinationController.text.trim(),
+        'startDate': _startDateController.text.trim(),
+        'endDate': _endDateController.text.trim(),
+        'groupSize': _groupSizeController.text.trim(),
         'updatedAt': FieldValue.serverTimestamp(),
       };
 
@@ -415,7 +400,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         if (mounted) {
           setState(() {
             _applyTripData({
-              'destination': data['destination'] ?? data['tripName'] ?? 'Karnataka',
+              'destination': data['destination'] ?? data['tripName'] ?? '',
               'startDate': data['startDate'],
               'endDate': data['endDate'],
               'groupSize': data['groupSize'],
@@ -427,17 +412,6 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         return;
       }
     } catch (_) {}
-
-    // Fallback if not found in local or remote storage
-    if (mounted && _destinationController.text.isEmpty) {
-      setState(() {
-        _destinationController.text = 'Karnataka';
-        _startDateController.text = '28/9/2026';
-        _endDateController.text = '30/9/2026';
-        _groupSizeController.text = '4';
-        _fetchPlacesFromGoogle('Karnataka');
-      });
-    }
   }
 
   @override
@@ -912,16 +886,12 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       'tripCode': _tripCode,
       'destination': _destinationController.text.trim().isNotEmpty
           ? _destinationController.text.trim()
-          : 'Karnataka',
-      'startDate': _startDateController.text.trim().isNotEmpty
-          ? _startDateController.text.trim()
-          : '28/9/2026',
-      'endDate': _endDateController.text.trim().isNotEmpty
-          ? _endDateController.text.trim()
-          : '30/9/2026',
+          : 'Trip Destination',
+      'startDate': _startDateController.text.trim(),
+      'endDate': _endDateController.text.trim(),
       'groupSize': _groupSizeController.text.trim().isNotEmpty
           ? _groupSizeController.text.trim()
-          : '4',
+          : '1',
       'places': allCombinedPlaces,
       'memberCount': _approvedMemberCount,
     };
@@ -1285,18 +1255,10 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     final tripData = {
       'id': DateTime.now().millisecondsSinceEpoch.toString(),
       'tripCode': _tripCode,
-      'destination': _destinationController.text.trim().isNotEmpty
-          ? _destinationController.text.trim()
-          : 'Karnataka',
-      'startDate': _startDateController.text.trim().isNotEmpty
-          ? _startDateController.text.trim()
-          : '28/9/2026',
-      'endDate': _endDateController.text.trim().isNotEmpty
-          ? _endDateController.text.trim()
-          : '30/9/2026',
-      'groupSize': _groupSizeController.text.trim().isNotEmpty
-          ? _groupSizeController.text.trim()
-          : '4',
+      'destination': _destinationController.text.trim(),
+      'startDate': _startDateController.text.trim(),
+      'endDate': _endDateController.text.trim(),
+      'groupSize': _groupSizeController.text.trim(),
       'places': allCombinedPlaces,
       'isHost': _isHost,
     };
@@ -1433,9 +1395,47 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                   onPressed: () async {
                     if (_currentStep < maxSteps) {
                       if (_currentStep == 1) {
-                        if (_destinationController.text.isNotEmpty) {
-                          _fetchPlacesFromGoogle(_destinationController.text);
+                        if (_destinationController.text.trim().isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Please enter a destination'),
+                              backgroundColor: Colors.redAccent,
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                          return;
                         }
+                        if (_startDateController.text.trim().isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Please select a start date'),
+                              backgroundColor: Colors.redAccent,
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                          return;
+                        }
+                        if (_endDateController.text.trim().isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Please select an end date'),
+                              backgroundColor: Colors.redAccent,
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                          return;
+                        }
+                        if (_isHost && _groupSizeController.text.trim().isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Please enter group size'),
+                              backgroundColor: Colors.redAccent,
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                          return;
+                        }
+                        _fetchPlacesFromGoogle(_destinationController.text.trim());
                         await _syncTripToFirestore();
                       } else if ((_isHost && _currentStep == 3) || (!_isHost && _currentStep == 2)) {
                         await _syncPreferencesToFirestore();
