@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'trip_details_screen.dart';
 import '../trip_qr_screen.dart';
 
@@ -39,6 +41,12 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   late bool _isHost;
   late String _tripCode;
 
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _tripSubscription;
+  Set<String> _groupPlaces = {};
+  int _approvedMemberCount = 1;
+  final Set<String> _pendingRequestIdsHandled = {};
+  bool _isShowingApprovalDialog = false;
+
   @override
   void initState() {
     super.initState();
@@ -51,6 +59,19 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     } else if (widget.tripCode != null) {
       _lookupAndApplyTrip(widget.tripCode!);
     }
+
+    if (_isHost) {
+      if (_destinationController.text.isEmpty) {
+        _destinationController.text = 'Karnataka';
+        _startDateController.text = '28/9/2026';
+        _endDateController.text = '30/9/2026';
+        _groupSizeController.text = '4';
+        _fetchPlacesFromGoogle('Karnataka');
+      }
+      _syncTripToFirestore(isInitial: true);
+    }
+
+    _listenToTripUpdates();
   }
 
   void _applyTripData(Map<String, dynamic> data) {
@@ -73,6 +94,290 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     }
     if (data['tripCode'] != null && data['tripCode'].toString().isNotEmpty) {
       _tripCode = data['tripCode'].toString();
+    }
+  }
+
+  Future<void> _syncTripToFirestore({bool isInitial = false}) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      final docRef = FirebaseFirestore.instance.collection('trips').doc(_tripCode);
+
+      final Map<String, dynamic> updateData = {
+        'tripCode': _tripCode,
+        'destination': _destinationController.text.trim().isNotEmpty
+            ? _destinationController.text.trim()
+            : 'Karnataka',
+        'startDate': _startDateController.text.trim().isNotEmpty
+            ? _startDateController.text.trim()
+            : '28/9/2026',
+        'endDate': _endDateController.text.trim().isNotEmpty
+            ? _endDateController.text.trim()
+            : '30/9/2026',
+        'groupSize': _groupSizeController.text.trim().isNotEmpty
+            ? _groupSizeController.text.trim()
+            : '4',
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+      if (isInitial && _isHost) {
+        updateData['hostUid'] = user?.uid ?? 'host';
+        updateData['hostName'] = user?.displayName ?? (user?.email?.split('@').first ?? 'Host');
+        updateData['hostPhotoUrl'] = user?.photoURL ?? '';
+        updateData['createdAt'] = FieldValue.serverTimestamp();
+        updateData['approvedMembers'] = [
+          {
+            'uid': user?.uid ?? 'host',
+            'name': user?.displayName ?? (user?.email?.split('@').first ?? 'Host'),
+            'photoUrl': user?.photoURL ?? '',
+            'role': 'host',
+          }
+        ];
+        updateData['pendingRequests'] = [];
+        updateData['memberPreferences'] = {};
+        updateData['places'] = _selectedPlaces;
+      }
+
+      await docRef.set(updateData, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint('Error syncing trip to Firestore: $e');
+    }
+  }
+
+  Future<void> _syncPreferencesToFirestore() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      final uid = user?.uid ?? (_isHost ? 'host' : 'participant_${DateTime.now().millisecondsSinceEpoch}');
+      final docRef = FirebaseFirestore.instance.collection('trips').doc(_tripCode);
+
+      await docRef.set({
+        'memberPreferences': {
+          uid: _selectedPlaces,
+        },
+        'places': FieldValue.arrayUnion(_selectedPlaces),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint('Error syncing preferences to Firestore: $e');
+    }
+  }
+
+  void _listenToTripUpdates() {
+    _tripSubscription = FirebaseFirestore.instance
+        .collection('trips')
+        .doc(_tripCode)
+        .snapshots()
+        .listen((snapshot) {
+      if (!snapshot.exists || snapshot.data() == null) return;
+      final data = snapshot.data()!;
+
+      // 1. Gather group preferences from all members
+      final Set<String> groupPlaces = {};
+      final memberPrefs = data['memberPreferences'] as Map<String, dynamic>?;
+      if (memberPrefs != null) {
+        for (final userPlaces in memberPrefs.values) {
+          if (userPlaces is List) {
+            groupPlaces.addAll(userPlaces.map((e) => e.toString()));
+          }
+        }
+      }
+      if (data['places'] is List) {
+        groupPlaces.addAll((data['places'] as List).map((e) => e.toString()));
+      }
+
+      final approved = (data['approvedMembers'] as List?) ?? [];
+
+      if (mounted) {
+        setState(() {
+          _groupPlaces = groupPlaces;
+          _approvedMemberCount = approved.isNotEmpty ? approved.length : 1;
+
+          // If participant, ensure destination & groupSize mirror the host's exact values
+          if (!_isHost) {
+            final hostDest = (data['destination'] ?? data['tripName'])?.toString();
+            if (hostDest != null &&
+                hostDest.isNotEmpty &&
+                _destinationController.text != hostDest) {
+              _destinationController.text = hostDest;
+              _fetchPlacesFromGoogle(hostDest);
+            }
+            final hostGroupSize = data['groupSize']?.toString();
+            if (hostGroupSize != null &&
+                hostGroupSize.isNotEmpty &&
+                _groupSizeController.text != hostGroupSize) {
+              _groupSizeController.text = hostGroupSize;
+            }
+          }
+        });
+      }
+
+      // 2. If Host, handle any pending join requests
+      if (_isHost) {
+        final pending = (data['pendingRequests'] as List?) ?? [];
+        for (final req in pending) {
+          if (req is Map) {
+            final uid = req['uid']?.toString() ?? '';
+            if (uid.isNotEmpty && !_pendingRequestIdsHandled.contains(uid)) {
+              _pendingRequestIdsHandled.add(uid);
+              _showHostApprovalDialog(req);
+              break; // Show one at a time
+            }
+          }
+        }
+      }
+    }, onError: (e) {
+      debugPrint('Error listening to trip updates: $e');
+    });
+  }
+
+  Future<void> _showHostApprovalDialog(Map req) async {
+    if (_isShowingApprovalDialog) return;
+    _isShowingApprovalDialog = true;
+    final userName = req['name']?.toString() ?? 'A traveler';
+    final userUid = req['uid']?.toString() ?? '';
+    final userPhoto = req['photoUrl']?.toString();
+
+    if (!mounted) {
+      _isShowingApprovalDialog = false;
+      return;
+    }
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) {
+        return AlertDialog(
+          backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6366F1).withValues(alpha: 0.15),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.person_add_rounded, color: Color(0xFF6366F1), size: 24),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Join Request',
+                  style: TextStyle(
+                    color: isDark ? Colors.white : const Color(0xFF0F172A),
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '$userName wants to join your trip planning room for ${_destinationController.text.isNotEmpty ? _destinationController.text : "this trip"}.',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569),
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.pin_rounded, size: 16, color: Color(0xFF6366F1)),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Trip Code: $_tripCode',
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                        color: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF4F46E5),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx, false),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.redAccent,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              ),
+              child: const Text('Deny', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogCtx, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF6366F1),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+              ),
+              child: const Text('Allow', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      },
+    );
+
+    _isShowingApprovalDialog = false;
+
+    // Update Firestore with the host's decision
+    final docRef = FirebaseFirestore.instance.collection('trips').doc(_tripCode);
+    try {
+      if (result == true) {
+        await docRef.update({
+          'pendingRequests': FieldValue.arrayRemove([req]),
+          'approvedMembers': FieldValue.arrayUnion([
+            {
+              'uid': userUid,
+              'name': userName,
+              'photoUrl': userPhoto ?? '',
+              'role': 'member',
+              'joinedAt': Timestamp.now(),
+            }
+          ]),
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('$userName joined the planning room!'),
+              backgroundColor: const Color(0xFF10B981),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      } else {
+        await docRef.update({
+          'pendingRequests': FieldValue.arrayRemove([req]),
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Request from $userName was declined.'),
+              backgroundColor: Colors.redAccent,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('Error updating join request decision: $e');
     }
   }
 
@@ -137,6 +442,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
   @override
   void dispose() {
+    _tripSubscription?.cancel();
     _destinationController.dispose();
     _startDateController.dispose();
     _endDateController.dispose();
@@ -399,8 +705,9 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             if (!_isHost) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
-                  content: Text('You cannot change destination, ask host if you wish to change destination'),
+                  content: Text('Destination is chosen by the host and cannot be changed.'),
                   backgroundColor: Colors.redAccent,
+                  behavior: SnackBarBehavior.floating,
                 ),
               );
             }
@@ -429,8 +736,20 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           hint: 'Number of people',
           icon: Icons.group_outlined,
           controller: _groupSizeController,
+          readOnly: !_isHost,
           keyboardType: TextInputType.number,
           isDark: isDark,
+          onTap: () {
+            if (!_isHost) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Group size is managed by the host and cannot be changed.'),
+                  backgroundColor: Colors.redAccent,
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+          },
         ),
         const SizedBox(height: 40),
       ],
@@ -442,6 +761,36 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (_approvedMemberCount > 1 || !_isHost) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF6366F1).withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.25),
+              ),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.groups_rounded, color: Color(0xFF6366F1), size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Group Planning Room • $_approvedMemberCount active member${_approvedMemberCount > 1 ? 's' : ''}\nAll places selected by you and others are automatically blended into the shared plan.',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF6366F1),
+                      fontWeight: FontWeight.w600,
+                      height: 1.3,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
         Text(
           'Preferences in ${_destinationController.text.isNotEmpty ? _destinationController.text : "your destination"}',
           style: TextStyle(
@@ -452,7 +801,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         ),
         const SizedBox(height: 8),
         Text(
-          'Select the places you wish to visit',
+          'Select the places you wish to visit (everyone\'s choices will be merged)',
           style: TextStyle(
             fontSize: 14,
             color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
@@ -495,10 +844,21 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                   spacing: 8,
                   runSpacing: 8,
                   children: category.value.map((place) {
-                    final isSelected = _selectedPlaces.contains(place);
+                    final isSelectedByMe = _selectedPlaces.contains(place);
+                    final isSelectedByGroup = _groupPlaces.contains(place);
+
                     return FilterChip(
-                      label: Text(place),
-                      selected: isSelected,
+                      label: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(place),
+                          if (isSelectedByGroup && !isSelectedByMe) ...[
+                            const SizedBox(width: 4),
+                            const Text('👥', style: TextStyle(fontSize: 11)),
+                          ],
+                        ],
+                      ),
+                      selected: isSelectedByMe,
                       onSelected: (selected) {
                         setState(() {
                           if (selected) {
@@ -507,22 +867,25 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                             _selectedPlaces.remove(place);
                           }
                         });
+                        _syncPreferencesToFirestore();
                       },
                       backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
                       selectedColor: const Color(0xFF6366F1).withValues(alpha: isDark ? 0.35 : 0.1),
                       checkmarkColor: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF6366F1),
                       labelStyle: TextStyle(
-                        color: isSelected
+                        color: isSelectedByMe
                             ? (isDark ? const Color(0xFFA5B4FC) : const Color(0xFF6366F1))
                             : (isDark ? const Color(0xFFCBD5E1) : const Color(0xFF64748B)),
-                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                        fontWeight: isSelectedByMe ? FontWeight.bold : FontWeight.normal,
                       ),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(20),
                         side: BorderSide(
-                          color: isSelected
+                          color: isSelectedByMe
                               ? const Color(0xFF6366F1)
-                              : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                              : (isSelectedByGroup
+                                  ? const Color(0xFF818CF8).withValues(alpha: 0.7)
+                                  : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0))),
                         ),
                       ),
                     );
@@ -538,8 +901,15 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   }
 
   Widget _buildStep3(bool isDark) {
+    // Combine choices from everyone in the group and local selections into a unified set
+    final allCombinedPlaces = <String>{..._groupPlaces, ..._selectedPlaces}.toList();
+    if (allCombinedPlaces.isEmpty) {
+      allCombinedPlaces.addAll(['Mountain Trek', 'Sunset Point', 'Historic Fort']);
+    }
+
     final previewTrip = {
-      'id': 'preview_trip',
+      'id': _tripCode,
+      'tripCode': _tripCode,
       'destination': _destinationController.text.trim().isNotEmpty
           ? _destinationController.text.trim()
           : 'Karnataka',
@@ -551,14 +921,60 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           : '30/9/2026',
       'groupSize': _groupSizeController.text.trim().isNotEmpty
           ? _groupSizeController.text.trim()
-          : '1',
-      'places': _selectedPlaces,
+          : '4',
+      'places': allCombinedPlaces,
+      'memberCount': _approvedMemberCount,
     };
 
-    return TripDetailsScreen(
-      trip: previewTrip,
-      isEmbedded: true,
-      scrollController: _scrollController,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_approvedMemberCount > 1 || _groupPlaces.isNotEmpty) ...[
+          Container(
+            margin: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF6366F1).withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFF6366F1).withValues(alpha: 0.25)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.auto_awesome_rounded, color: Color(0xFF6366F1), size: 22),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Unified Group Itinerary',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                          color: Color(0xFF6366F1),
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Considering choices of all $_approvedMemberCount group member${_approvedMemberCount > 1 ? 's' : ''} (${allCombinedPlaces.length} places included).',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        TripDetailsScreen(
+          trip: previewTrip,
+          isEmbedded: true,
+          scrollController: _scrollController,
+        ),
+      ],
     );
   }
 
@@ -791,9 +1207,137 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     );
   }
 
+  Widget _buildStepDivider(bool isActive, bool isDark) {
+    return Expanded(
+      child: Container(
+        height: 2,
+        color: isActive
+            ? const Color(0xFF6366F1)
+            : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+        margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
+      ),
+    );
+  }
+
+  Widget _buildStepper(bool isDark) {
+    if (_isHost) {
+      return Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          _buildStepIndicator('Details', '1', _currentStep >= 1, isDark),
+          _buildStepDivider(_currentStep >= 2, isDark),
+          _buildStepIndicator('Group', '2', _currentStep >= 2, isDark),
+          _buildStepDivider(_currentStep >= 3, isDark),
+          _buildStepIndicator('Preferences', '3', _currentStep >= 3, isDark),
+          _buildStepDivider(_currentStep >= 4, isDark),
+          _buildStepIndicator('Show trip', '4', _currentStep >= 4, isDark),
+        ],
+      );
+    } else {
+      return Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          _buildStepIndicator('Details', '1', _currentStep >= 1, isDark),
+          _buildStepDivider(_currentStep >= 2, isDark),
+          _buildStepIndicator('Preferences', '2', _currentStep >= 2, isDark),
+          _buildStepDivider(_currentStep >= 3, isDark),
+          _buildStepIndicator('Show trip', '3', _currentStep >= 3, isDark),
+        ],
+      );
+    }
+  }
+
+  Widget _buildCurrentStep(bool isDark) {
+    if (_isHost) {
+      switch (_currentStep) {
+        case 1:
+          return _buildStep1(isDark);
+        case 2:
+          return _buildStep4(isDark);
+        case 3:
+          return _buildStep2(isDark);
+        case 4:
+        default:
+          return _buildStep3(isDark);
+      }
+    } else {
+      switch (_currentStep) {
+        case 1:
+          return _buildStep1(isDark);
+        case 2:
+          return _buildStep2(isDark);
+        case 3:
+        default:
+          return _buildStep3(isDark);
+      }
+    }
+  }
+
+  Future<void> _saveTrip() async {
+    final prefs = await SharedPreferences.getInstance();
+    List<String> savedTrips = prefs.getStringList('saved_trips') ?? [];
+    
+    final allCombinedPlaces = <String>{..._groupPlaces, ..._selectedPlaces}.toList();
+    if (allCombinedPlaces.isEmpty) {
+      allCombinedPlaces.addAll(['Mountain Trek', 'Sunset Point', 'Historic Fort']);
+    }
+
+    final tripData = {
+      'id': DateTime.now().millisecondsSinceEpoch.toString(),
+      'tripCode': _tripCode,
+      'destination': _destinationController.text.trim().isNotEmpty
+          ? _destinationController.text.trim()
+          : 'Karnataka',
+      'startDate': _startDateController.text.trim().isNotEmpty
+          ? _startDateController.text.trim()
+          : '28/9/2026',
+      'endDate': _endDateController.text.trim().isNotEmpty
+          ? _endDateController.text.trim()
+          : '30/9/2026',
+      'groupSize': _groupSizeController.text.trim().isNotEmpty
+          ? _groupSizeController.text.trim()
+          : '4',
+      'places': allCombinedPlaces,
+      'isHost': _isHost,
+    };
+    
+    savedTrips.removeWhere((item) {
+      try {
+        final decoded = jsonDecode(item);
+        return decoded['tripCode'] == _tripCode;
+      } catch (_) {
+        return false;
+      }
+    });
+
+    savedTrips.add(jsonEncode(tripData));
+    await prefs.setStringList('saved_trips', savedTrips);
+    
+    try {
+      await FirebaseFirestore.instance.collection('trips').doc(_tripCode).set({
+        'places': allCombinedPlaces,
+        'status': 'completed',
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (_) {}
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_isHost ? 'Trip Saved Successfully!' : 'Trip Plan Saved to My Trips!'),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      Navigator.pop(context, true);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final int maxSteps = _isHost ? 4 : 3;
+    final bool isLastStep = _currentStep == maxSteps;
 
     return Scaffold(
       backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
@@ -850,58 +1394,20 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             Expanded(
               child: SingleChildScrollView(
                 controller: _scrollController,
-                padding: _currentStep == 4 ? EdgeInsets.zero : const EdgeInsets.all(24.0),
+                padding: isLastStep ? EdgeInsets.zero : const EdgeInsets.all(24.0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     // Stepper
                     Padding(
-                      padding: _currentStep == 4
+                      padding: isLastStep
                           ? const EdgeInsets.fromLTRB(24, 16, 24, 16)
                           : EdgeInsets.zero,
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          _buildStepIndicator('Details', '1', _currentStep >= 1, isDark),
-                          Expanded(
-                            child: Container(
-                              height: 2,
-                              color: _currentStep >= 2
-                                  ? const Color(0xFF6366F1)
-                                  : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
-                              margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
-                            ),
-                          ),
-                          _buildStepIndicator('Group', '2', _currentStep >= 2, isDark),
-                          Expanded(
-                            child: Container(
-                              height: 2,
-                              color: _currentStep >= 3
-                                  ? const Color(0xFF6366F1)
-                                  : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
-                              margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
-                            ),
-                          ),
-                          _buildStepIndicator('Preferences', '3', _currentStep >= 3, isDark),
-                          Expanded(
-                            child: Container(
-                              height: 2,
-                              color: _currentStep >= 4
-                                  ? const Color(0xFF6366F1)
-                                  : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
-                              margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
-                            ),
-                          ),
-                          _buildStepIndicator('Show trip', '4', _currentStep >= 4, isDark),
-                        ],
-                      ),
+                      child: _buildStepper(isDark),
                     ),
-                    if (_currentStep != 4) const SizedBox(height: 32),
+                    if (!isLastStep) const SizedBox(height: 32),
 
-                    if (_currentStep == 1) _buildStep1(isDark),
-                    if (_currentStep == 2) _buildStep4(isDark),
-                    if (_currentStep == 3) _buildStep2(isDark),
-                    if (_currentStep == 4) _buildStep3(isDark),
+                    _buildCurrentStep(isDark),
                   ],
                 ),
               ),
@@ -925,9 +1431,14 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                 height: 56,
                 child: ElevatedButton(
                   onPressed: () async {
-                    if (_currentStep < 4) {
-                      if (_currentStep == 1 && _destinationController.text.isNotEmpty) {
-                        _fetchPlacesFromGoogle(_destinationController.text);
+                    if (_currentStep < maxSteps) {
+                      if (_currentStep == 1) {
+                        if (_destinationController.text.isNotEmpty) {
+                          _fetchPlacesFromGoogle(_destinationController.text);
+                        }
+                        await _syncTripToFirestore();
+                      } else if ((_isHost && _currentStep == 3) || (!_isHost && _currentStep == 2)) {
+                        await _syncPreferencesToFirestore();
                       }
                       setState(() {
                         _currentStep++;
@@ -936,40 +1447,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                         _scrollController.jumpTo(0);
                       }
                     } else {
-                      // Save Trip
-                      final prefs = await SharedPreferences.getInstance();
-                      List<String> savedTrips = prefs.getStringList('saved_trips') ?? [];
-                      
-                      final tripData = {
-                        'id': DateTime.now().millisecondsSinceEpoch.toString(),
-                        'tripCode': _tripCode,
-                        'destination': _destinationController.text.trim().isNotEmpty
-                            ? _destinationController.text.trim()
-                            : 'Karnataka',
-                        'startDate': _startDateController.text.trim().isNotEmpty
-                            ? _startDateController.text.trim()
-                            : '28/9/2026',
-                        'endDate': _endDateController.text.trim().isNotEmpty
-                            ? _endDateController.text.trim()
-                            : '30/9/2026',
-                        'groupSize': _groupSizeController.text.trim().isNotEmpty
-                            ? _groupSizeController.text.trim()
-                            : '1',
-                        'places': _selectedPlaces,
-                      };
-                      
-                      savedTrips.add(jsonEncode(tripData));
-                      await prefs.setStringList('saved_trips', savedTrips);
-                      
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Trip Saved Successfully!'),
-                            backgroundColor: Colors.green,
-                          ),
-                        );
-                        Navigator.pop(context, true);
-                      }
+                      await _saveTrip();
                     }
                   },
                   style: ElevatedButton.styleFrom(
@@ -983,7 +1461,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Text(
-                        _currentStep == 4 ? 'Save Trip' : 'Next',
+                        isLastStep ? 'Save Trip' : 'Next',
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
@@ -992,7 +1470,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                       ),
                       const SizedBox(width: 8),
                       Icon(
-                        _currentStep == 4 ? Icons.check : Icons.arrow_forward, 
+                        isLastStep ? Icons.check : Icons.arrow_forward, 
                         color: Colors.white, 
                         size: 20
                       ),

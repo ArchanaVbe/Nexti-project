@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:image_picker/image_picker.dart';
 
 class QrScannerScreen extends StatefulWidget {
@@ -44,24 +42,9 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
       return;
     }
 
-    // 2. Optionally update Firestore members if logged in
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null) {
-      try {
-        final tripRef =
-            FirebaseFirestore.instance.collection('trips').doc(tripId);
-        final tripDoc = await tripRef.get();
-        if (tripDoc.exists) {
-          await tripRef.update({
-            'members': FieldValue.arrayUnion([user.uid]),
-          });
-        }
-      } catch (_) {}
-    }
-
     if (!mounted) return;
     _showFeedback('Trip code scanned: $tripId');
-    // Return extracted tripId to caller so it automatically fills the input field
+    // Return extracted tripId to caller so it automatically fills the input field and triggers approval
     Navigator.pop(context, tripId);
   }
 

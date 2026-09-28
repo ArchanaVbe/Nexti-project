@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -338,75 +339,259 @@ class HomeTabScreen extends StatelessWidget {
     BuildContext homeContext,
     String rawCode,
   ) async {
-    String cleanCode = rawCode.trim();
-    if (cleanCode.startsWith('nexttripia:join:')) {
-      cleanCode = cleanCode.replaceFirst('nexttripia:join:', '').trim();
+    String cleanCode = rawCode.trim().toUpperCase();
+    if (cleanCode.startsWith('NEXTTRIPIA:JOIN:')) {
+      cleanCode = cleanCode.replaceFirst('NEXTTRIPIA:JOIN:', '').trim();
     }
     if (cleanCode.isEmpty) return;
 
     // Close bottom sheet
     Navigator.pop(sheetContext);
 
-    // Look for matching trip data in SharedPreferences or Firestore
+    final currentUser = FirebaseAuth.instance.currentUser;
+    final myUid = currentUser?.uid ?? 'traveler_${DateTime.now().millisecondsSinceEpoch}';
+    final myName = currentUser?.displayName ?? (currentUser?.email?.split('@').first ?? 'Traveler');
+    final myPhoto = currentUser?.photoURL ?? '';
+
+    // Check Firestore for trip
+    final docRef = FirebaseFirestore.instance.collection('trips').doc(cleanCode);
+    DocumentSnapshot<Map<String, dynamic>>? docSnap;
+    try {
+      docSnap = await docRef.get();
+    } catch (e) {
+      debugPrint('Error getting trip doc: $e');
+    }
+
     Map<String, dynamic>? matchingTrip;
 
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final savedTrips = prefs.getStringList('saved_trips') ?? [];
-      final targetUpper = cleanCode.toUpperCase();
-
-      for (final tripStr in savedTrips) {
-        try {
-          final Map<String, dynamic> trip = jsonDecode(tripStr);
-          final id = (trip['id'] ?? '').toString().toUpperCase();
-          final code = (trip['tripCode'] ?? '').toString().toUpperCase();
-          if (id == targetUpper ||
-              code == targetUpper ||
-              id.contains(targetUpper) ||
-              code.contains(targetUpper)) {
-            matchingTrip = trip;
-            break;
-          }
-        } catch (_) {}
-      }
-    } catch (_) {}
-
-    if (matchingTrip == null) {
+    if (docSnap != null && docSnap.exists && docSnap.data() != null) {
+      final data = docSnap.data()!;
+      matchingTrip = {
+        'id': docSnap.id,
+        'tripCode': cleanCode,
+        'destination': data['destination'] ?? data['tripName'] ?? 'Karnataka',
+        'startDate': data['startDate'] ?? '28/9/2026',
+        'endDate': data['endDate'] ?? '30/9/2026',
+        'groupSize': data['groupSize'] ?? '4',
+        'places': data['places'] ?? <String>[],
+        'hostUid': data['hostUid'],
+        'approvedMembers': data['approvedMembers'],
+        'pendingRequests': data['pendingRequests'],
+      };
+    } else {
+      // Local fallback lookup
       try {
-        final doc =
-            await FirebaseFirestore.instance.collection('trips').doc(cleanCode).get();
-        if (doc.exists && doc.data() != null) {
-          final data = doc.data()!;
-          matchingTrip = {
-            'id': doc.id,
-            'tripCode': cleanCode,
-            'destination': data['destination'] ?? data['tripName'] ?? 'Karnataka',
-            'startDate': data['startDate'] ?? '28/9/2026',
-            'endDate': data['endDate'] ?? '30/9/2026',
-            'groupSize': data['groupSize'] ?? '4',
-            'places': data['places'] ?? <String>[],
-          };
+        final prefs = await SharedPreferences.getInstance();
+        final savedTrips = prefs.getStringList('saved_trips') ?? [];
+        for (final tripStr in savedTrips) {
+          try {
+            final Map<String, dynamic> trip = jsonDecode(tripStr);
+            final id = (trip['id'] ?? '').toString().toUpperCase();
+            final code = (trip['tripCode'] ?? '').toString().toUpperCase();
+            if (id == cleanCode || code == cleanCode || id.contains(cleanCode) || code.contains(cleanCode)) {
+              matchingTrip = trip;
+              break;
+            }
+          } catch (_) {}
         }
       } catch (_) {}
     }
 
+    if (matchingTrip == null) {
+      if (homeContext.mounted) {
+        ScaffoldMessenger.of(homeContext).showSnackBar(
+          SnackBar(
+            content: Text('Trip code "$cleanCode" not found. Please check with the host.'),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    final hostUid = (matchingTrip['hostUid'] ?? '').toString();
+    final approvedList = (matchingTrip['approvedMembers'] as List?) ?? [];
+    
+    final bool isHost = (hostUid.isNotEmpty && hostUid == myUid);
+    final bool isAlreadyApproved = isHost || approvedList.any((m) => m is Map && m['uid'] == myUid);
+
+    if (isAlreadyApproved) {
+      if (!homeContext.mounted) return;
+      final result = await Navigator.push(
+        homeContext,
+        MaterialPageRoute(
+          builder: (context) => CreateTripScreen(
+            isHost: isHost,
+            tripCode: cleanCode,
+            initialTripData: matchingTrip,
+          ),
+        ),
+      );
+      if (result == true) {
+        onNavigateTab?.call(1);
+      }
+      return;
+    }
+
+    // User is NOT yet approved: Send join request to host!
+    final requestMap = {
+      'uid': myUid,
+      'name': myName,
+      'photoUrl': myPhoto,
+      'requestedAt': Timestamp.now(),
+    };
+
+    try {
+      final pendingList = (matchingTrip['pendingRequests'] as List?) ?? [];
+      final bool alreadyPending = pendingList.any((r) => r is Map && r['uid'] == myUid);
+      if (!alreadyPending) {
+        await docRef.update({
+          'pendingRequests': FieldValue.arrayUnion([requestMap]),
+        });
+      }
+    } catch (e) {
+      debugPrint('Error updating pendingRequests: $e');
+    }
+
     if (!homeContext.mounted) return;
 
-    // Navigate to Trip Planning Room
-    final result = await Navigator.push(
-      homeContext,
-      MaterialPageRoute(
-        builder: (context) => CreateTripScreen(
-          isHost: false,
-          tripCode: cleanCode,
-          initialTripData: matchingTrip,
-        ),
-      ),
+    // Show waiting for approval dialog with real-time Firestore listener
+    StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? sub;
+    bool hasHandledResponse = false;
+
+    await showDialog(
+      context: homeContext,
+      barrierDismissible: false,
+      builder: (waitingCtx) {
+        final isDark = Theme.of(waitingCtx).brightness == Brightness.dark;
+
+        sub ??= docRef.snapshots().listen((snapshot) {
+          if (!snapshot.exists || snapshot.data() == null) return;
+          final currentData = snapshot.data()!;
+          final currentApproved = (currentData['approvedMembers'] as List?) ?? [];
+          final currentPending = (currentData['pendingRequests'] as List?) ?? [];
+
+          final isNowApproved = currentApproved.any((m) => m is Map && m['uid'] == myUid);
+          final isStillPending = currentPending.any((r) => r is Map && r['uid'] == myUid);
+
+          if (isNowApproved && !hasHandledResponse) {
+            hasHandledResponse = true;
+            sub?.cancel();
+            if (waitingCtx.mounted) {
+              Navigator.of(waitingCtx).pop();
+            }
+            if (homeContext.mounted) {
+              ScaffoldMessenger.of(homeContext).showSnackBar(
+                const SnackBar(
+                  content: Text('Host approved your request! Welcome to the planning room.'),
+                  backgroundColor: Color(0xFF10B981),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+              Navigator.push(
+                homeContext,
+                MaterialPageRoute(
+                  builder: (context) => CreateTripScreen(
+                    isHost: false,
+                    tripCode: cleanCode,
+                    initialTripData: currentData,
+                  ),
+                ),
+              ).then((result) {
+                if (result == true) {
+                  onNavigateTab?.call(1);
+                }
+              });
+            }
+          } else if (!isStillPending && !isNowApproved && !hasHandledResponse) {
+            // Request was denied by the host
+            hasHandledResponse = true;
+            sub?.cancel();
+            if (waitingCtx.mounted) {
+              Navigator.of(waitingCtx).pop();
+            }
+            if (homeContext.mounted) {
+              ScaffoldMessenger.of(homeContext).showSnackBar(
+                const SnackBar(
+                  content: Text('The host declined your request to join this trip.'),
+                  backgroundColor: Colors.redAccent,
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+          }
+        });
+
+        return PopScope(
+          canPop: false,
+          child: AlertDialog(
+            backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            content: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(
+                    width: 48,
+                    height: 48,
+                    child: CircularProgressIndicator(
+                      color: Color(0xFF6366F1),
+                      strokeWidth: 3.5,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    'Waiting for Host Approval',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      color: isDark ? Colors.white : const Color(0xFF0F172A),
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'A join request has been sent to the host for $cleanCode.\nYou will enter the planning room as soon as the host allows you in.',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                      height: 1.4,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 44,
+                    child: OutlinedButton(
+                      onPressed: () {
+                        sub?.cancel();
+                        docRef.update({
+                          'pendingRequests': FieldValue.arrayRemove([requestMap]),
+                        }).catchError((_) {});
+                        Navigator.pop(waitingCtx);
+                      },
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                        side: BorderSide(
+                          color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                        ),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      child: const Text('Cancel Request', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
 
-    if (result == true) {
-      onNavigateTab?.call(1);
-    }
+    sub?.cancel();
   }
 
 
