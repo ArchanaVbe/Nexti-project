@@ -18,8 +18,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   // Dynamic user credentials & details loaded from Firebase / Google Account
   String _fullName = 'Explorer';
   String _email = 'explorer@nextripia.ai';
-  String _phone = '+91 98765 43210';
-  String _location = 'Bengaluru, Karnataka';
   String _authProvider = 'Google Sign-In';
   String _memberSince = 'September 2026';
   String? _photoUrl;
@@ -66,10 +64,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
             _photoUrl = currentUser.photoURL;
           }
 
-          if (currentUser.phoneNumber != null && currentUser.phoneNumber!.isNotEmpty) {
-            _phone = currentUser.phoneNumber!;
-          }
-
           if (currentUser.metadata.creationTime != null) {
             _memberSince = _formatDate(currentUser.metadata.creationTime);
           }
@@ -103,12 +97,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
             if (data['displayName'] != null && (data['displayName'] as String).isNotEmpty) {
               _fullName = data['displayName'];
             }
-            if (data['phone'] != null && (data['phone'] as String).isNotEmpty) {
-              _phone = data['phone'];
-            }
-            if (data['location'] != null && (data['location'] as String).isNotEmpty) {
-              _location = data['location'];
-            }
             if (data['photoUrl'] != null && (data['photoUrl'] as String).isNotEmpty && _profileImage == null) {
               _photoUrl = data['photoUrl'];
             }
@@ -121,16 +109,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
       // Offline / guest mode - load saved prefs
       final savedName = prefs.getString('user_profile_name');
       final savedEmail = prefs.getString('user_profile_email');
-      final savedPhone = prefs.getString('user_profile_phone');
-      final savedLocation = prefs.getString('user_profile_location');
       final savedPhotoPath = prefs.getString('user_profile_image_path');
 
       if (mounted) {
         setState(() {
           if (savedName != null && savedName.isNotEmpty) _fullName = savedName;
           if (savedEmail != null && savedEmail.isNotEmpty) _email = savedEmail;
-          if (savedPhone != null && savedPhone.isNotEmpty) _phone = savedPhone;
-          if (savedLocation != null && savedLocation.isNotEmpty) _location = savedLocation;
           if (savedPhotoPath != null && File(savedPhotoPath).existsSync()) {
             _profileImage = File(savedPhotoPath);
           }
@@ -449,8 +433,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void _showEditProfileBottomSheet() {
     final nameController = TextEditingController(text: _fullName);
     final emailController = TextEditingController(text: _email);
-    final phoneController = TextEditingController(text: _phone);
-    final locationController = TextEditingController(text: _location);
 
     showModalBottomSheet(
       context: context,
@@ -495,10 +477,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
               _buildTextField('Full Name', Icons.person_outline, nameController),
               const SizedBox(height: 14),
               _buildTextField('Email Address', Icons.email_outlined, emailController),
-              const SizedBox(height: 14),
-              _buildTextField('Phone Number', Icons.phone_outlined, phoneController),
-              const SizedBox(height: 14),
-              _buildTextField('Location', Icons.location_on_outlined, locationController),
               const SizedBox(height: 24),
               SizedBox(
                 width: double.infinity,
@@ -519,26 +497,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     final newEmail = emailController.text.trim().isNotEmpty
                         ? emailController.text.trim()
                         : _email;
-                    final newPhone = phoneController.text.trim().isNotEmpty
-                        ? phoneController.text.trim()
-                        : _phone;
-                    final newLocation = locationController.text.trim().isNotEmpty
-                        ? locationController.text.trim()
-                        : _location;
 
                     setState(() {
                       _fullName = newName;
                       _email = newEmail;
-                      _phone = newPhone;
-                      _location = newLocation;
                     });
 
                     // Save locally to SharedPreferences
                     final prefs = await SharedPreferences.getInstance();
                     await prefs.setString('user_profile_name', newName);
                     await prefs.setString('user_profile_email', newEmail);
-                    await prefs.setString('user_profile_phone', newPhone);
-                    await prefs.setString('user_profile_location', newLocation);
 
                     // Update in Firebase Auth and Firestore if logged in
                     final user = FirebaseAuth.instance.currentUser;
@@ -549,8 +517,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       FirebaseFirestore.instance.collection('users').doc(user.uid).set({
                         'displayName': newName,
                         'email': newEmail,
-                        'phone': newPhone,
-                        'location': newLocation,
                       }, SetOptions(merge: true)).catchError((e) {
                         debugPrint('Firestore update profile note: $e');
                       });
@@ -989,22 +955,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             label: 'Email',
             value: _email,
           ),
-          _buildDivider(),
-          _buildDetailRow(
-            icon: Icons.phone_rounded,
-            iconColor: isDark ? const Color(0xFF4ADE80) : const Color(0xFF16A34A),
-            bgColor: isDark ? const Color(0xFF052E16) : const Color(0xFFDCFCE7),
-            label: 'Phone Number',
-            value: _phone,
-          ),
-          _buildDivider(),
-          _buildDetailRow(
-            icon: Icons.location_on_rounded,
-            iconColor: isDark ? const Color(0xFFFB923C) : const Color(0xFFEA580C),
-            bgColor: isDark ? const Color(0xFF431407) : const Color(0xFFFFEDD5),
-            label: 'Location',
-            value: _location,
-          ),
+
           _buildDivider(),
           _buildDetailRow(
             icon: Icons.lock_person_rounded,
