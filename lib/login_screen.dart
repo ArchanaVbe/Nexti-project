@@ -369,38 +369,18 @@ class _LoginScreenState extends State<LoginScreen> {
                   children: [
                     const SizedBox(height: 28),
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const SizedBox(width: 48),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: const [
-                            Icon(Icons.public, size: 20, color: Colors.black87),
-                            SizedBox(width: 8),
-                            Text(
-                              'NextTripia AI',
-                              style: TextStyle(
-                                fontSize: 17,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: -0.2,
-                                color: Colors.black87,
-                              ),
-                            ),
-                          ],
-                        ),
-                        TextButton(
-                          onPressed: () => Navigator.pushReplacementNamed(context, '/home'),
-                          style: TextButton.styleFrom(
-                            foregroundColor: Colors.black54,
-                            padding: const EdgeInsets.symmetric(horizontal: 10),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text('Skip', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                              SizedBox(width: 2),
-                              Icon(Icons.arrow_forward_ios_rounded, size: 11),
-                            ],
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
+                      children: const [
+                        Icon(Icons.public, size: 20, color: Colors.black87),
+                        SizedBox(width: 8),
+                        Text(
+                          'NextTripia AI',
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: -0.2,
+                            color: Colors.black87,
                           ),
                         ),
                       ],
