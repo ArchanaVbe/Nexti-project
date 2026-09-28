@@ -1,6 +1,10 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_theme.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -11,18 +15,130 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  // User credentials & details (entered during login / onboarding)
-  String _fullName = 'Archana';
-  String _email = 'archanavbe@gmail.com';
+  // Dynamic user credentials & details loaded from Firebase / Google Account
+  String _fullName = 'Explorer';
+  String _email = 'explorer@nextripia.ai';
   String _phone = '+91 98765 43210';
   String _location = 'Bengaluru, Karnataka';
-  final String _authProvider = 'Google Sign-In';
-  final String _memberSince = 'September 2026';
+  String _authProvider = 'Google Sign-In';
+  String _memberSince = 'September 2026';
+  String? _photoUrl;
 
   bool _notificationsEnabled = true;
 
   File? _profileImage;
   final ImagePicker _picker = ImagePicker();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUserProfile();
+  }
+
+  String _formatDate(DateTime? date) {
+    if (date == null) return 'September 2026';
+    const months = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'
+    ];
+    return '${months[date.month - 1]} ${date.year}';
+  }
+
+  Future<void> _loadUserProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // 1. Fetch from Firebase Auth currentUser
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser != null) {
+      if (mounted) {
+        setState(() {
+          if (currentUser.displayName != null && currentUser.displayName!.trim().isNotEmpty) {
+            _fullName = currentUser.displayName!.trim();
+          } else if (currentUser.email != null && currentUser.email!.isNotEmpty) {
+            _fullName = currentUser.email!.split('@').first;
+          }
+
+          if (currentUser.email != null && currentUser.email!.isNotEmpty) {
+            _email = currentUser.email!;
+          }
+
+          if (currentUser.photoURL != null && currentUser.photoURL!.isNotEmpty) {
+            _photoUrl = currentUser.photoURL;
+          }
+
+          if (currentUser.phoneNumber != null && currentUser.phoneNumber!.isNotEmpty) {
+            _phone = currentUser.phoneNumber!;
+          }
+
+          if (currentUser.metadata.creationTime != null) {
+            _memberSince = _formatDate(currentUser.metadata.creationTime);
+          }
+
+          if (currentUser.providerData.any((p) => p.providerId == 'google.com')) {
+            _authProvider = 'Google Sign-In';
+          } else if (currentUser.providerData.any((p) => p.providerId == 'password')) {
+            _authProvider = 'Email & Password';
+          } else {
+            _authProvider = 'Google Account';
+          }
+        });
+      }
+
+      // Check for local customized photo override
+      final savedPhotoPath = prefs.getString('user_profile_image_path');
+      if (savedPhotoPath != null && File(savedPhotoPath).existsSync()) {
+        if (mounted) {
+          setState(() {
+            _profileImage = File(savedPhotoPath);
+          });
+        }
+      }
+
+      // 2. Fetch extra profile fields from Cloud Firestore
+      try {
+        final doc = await FirebaseFirestore.instance.collection('users').doc(currentUser.uid).get();
+        if (doc.exists && doc.data() != null && mounted) {
+          final data = doc.data()!;
+          setState(() {
+            if (data['displayName'] != null && (data['displayName'] as String).isNotEmpty) {
+              _fullName = data['displayName'];
+            }
+            if (data['phone'] != null && (data['phone'] as String).isNotEmpty) {
+              _phone = data['phone'];
+            }
+            if (data['location'] != null && (data['location'] as String).isNotEmpty) {
+              _location = data['location'];
+            }
+            if (data['photoUrl'] != null && (data['photoUrl'] as String).isNotEmpty && _profileImage == null) {
+              _photoUrl = data['photoUrl'];
+            }
+          });
+        }
+      } catch (e) {
+        debugPrint('Firestore profile load note: $e');
+      }
+    } else {
+      // Offline / guest mode - load saved prefs
+      final savedName = prefs.getString('user_profile_name');
+      final savedEmail = prefs.getString('user_profile_email');
+      final savedPhone = prefs.getString('user_profile_phone');
+      final savedLocation = prefs.getString('user_profile_location');
+      final savedPhotoPath = prefs.getString('user_profile_image_path');
+
+      if (mounted) {
+        setState(() {
+          if (savedName != null && savedName.isNotEmpty) _fullName = savedName;
+          if (savedEmail != null && savedEmail.isNotEmpty) _email = savedEmail;
+          if (savedPhone != null && savedPhone.isNotEmpty) _phone = savedPhone;
+          if (savedLocation != null && savedLocation.isNotEmpty) _location = savedLocation;
+          if (savedPhotoPath != null && File(savedPhotoPath).existsSync()) {
+            _profileImage = File(savedPhotoPath);
+          }
+          _authProvider = 'Guest User';
+        });
+      }
+    }
+  }
 
   Future<void> _pickImage(ImageSource source) async {
     try {
@@ -246,25 +362,31 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
               ),
             ),
-            if (_profileImage != null) ...[
+            if (_profileImage != null || (_photoUrl != null && _photoUrl!.isNotEmpty)) ...[
               const SizedBox(height: 12),
               InkWell(
                 borderRadius: BorderRadius.circular(16),
-                onTap: () {
+                onTap: () async {
                   Navigator.pop(ctx);
                   setState(() {
                     _profileImage = null;
+                    _photoUrl = null;
                   });
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: const Text('Profile photo removed'),
-                      backgroundColor: const Color(0xFF64748B),
-                      behavior: SnackBarBehavior.floating,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.remove('user_profile_image_path');
+                  await prefs.remove('user_profile_photo_url');
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: const Text('Profile photo removed'),
+                        backgroundColor: const Color(0xFF64748B),
+                        behavior: SnackBarBehavior.floating,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                       ),
-                    ),
-                  );
+                    );
+                  }
                 },
                 child: Container(
                   padding: const EdgeInsets.all(14),
@@ -390,24 +512,58 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                     elevation: 0,
                   ),
-                  onPressed: () {
+                  onPressed: () async {
+                    final newName = nameController.text.trim().isNotEmpty
+                        ? nameController.text.trim()
+                        : _fullName;
+                    final newEmail = emailController.text.trim().isNotEmpty
+                        ? emailController.text.trim()
+                        : _email;
+                    final newPhone = phoneController.text.trim().isNotEmpty
+                        ? phoneController.text.trim()
+                        : _phone;
+                    final newLocation = locationController.text.trim().isNotEmpty
+                        ? locationController.text.trim()
+                        : _location;
+
                     setState(() {
-                      _fullName = nameController.text.trim().isNotEmpty
-                          ? nameController.text.trim()
-                          : _fullName;
-                      _email = emailController.text.trim().isNotEmpty
-                          ? emailController.text.trim()
-                          : _email;
-                      _phone = phoneController.text.trim().isNotEmpty
-                          ? phoneController.text.trim()
-                          : _phone;
-                      _location = locationController.text.trim().isNotEmpty
-                          ? locationController.text.trim()
-                          : _location;
+                      _fullName = newName;
+                      _email = newEmail;
+                      _phone = newPhone;
+                      _location = newLocation;
                     });
+
+                    // Save locally to SharedPreferences
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.setString('user_profile_name', newName);
+                    await prefs.setString('user_profile_email', newEmail);
+                    await prefs.setString('user_profile_phone', newPhone);
+                    await prefs.setString('user_profile_location', newLocation);
+
+                    // Update in Firebase Auth and Firestore if logged in
+                    final user = FirebaseAuth.instance.currentUser;
+                    if (user != null) {
+                      if (newName != user.displayName) {
+                        user.updateDisplayName(newName).catchError((_) {});
+                      }
+                      FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+                        'displayName': newName,
+                        'email': newEmail,
+                        'phone': newPhone,
+                        'location': newLocation,
+                      }, SetOptions(merge: true)).catchError((e) {
+                        debugPrint('Firestore update profile note: $e');
+                      });
+                    }
+
+                    if (!mounted || !ctx.mounted) return;
                     Navigator.pop(ctx);
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Profile updated successfully!')),
+                      const SnackBar(
+                        content: Text('Profile updated successfully!'),
+                        backgroundColor: Color(0xFF10B981),
+                        behavior: SnackBarBehavior.floating,
+                      ),
                     );
                   },
                   child: const Text(
@@ -481,14 +637,112 @@ class _ProfileScreenState extends State<ProfileScreen> {
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
-            onPressed: () {
+            onPressed: () async {
               Navigator.pop(ctx);
-              Navigator.pushReplacementNamed(context, '/login');
+              try {
+                await FirebaseAuth.instance.signOut();
+              } catch (_) {}
+              try {
+                await GoogleSignIn().signOut();
+              } catch (_) {}
+              if (!mounted) return;
+              Navigator.pushNamedAndRemoveUntil(context, '/login', (route) => false);
             },
             child: const Text('Log Out'),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildAvatar(bool isDark) {
+    final initial = _fullName.trim().isNotEmpty
+        ? _fullName.trim()[0].toUpperCase()
+        : (_email.isNotEmpty ? _email[0].toUpperCase() : 'U');
+
+    Widget content;
+    if (_profileImage != null) {
+      content = ClipOval(
+        child: Image.file(
+          _profileImage!,
+          width: 88,
+          height: 88,
+          fit: BoxFit.cover,
+        ),
+      );
+    } else if (_photoUrl != null && _photoUrl!.isNotEmpty) {
+      content = ClipOval(
+        child: Image.network(
+          _photoUrl!,
+          width: 88,
+          height: 88,
+          fit: BoxFit.cover,
+          errorBuilder: (ctx, err, stack) => Center(
+            child: Text(
+              initial,
+              style: const TextStyle(
+                fontSize: 38,
+                fontWeight: FontWeight.w800,
+                color: Colors.white,
+              ),
+            ),
+          ),
+          loadingBuilder: (ctx, child, progress) {
+            if (progress == null) return child;
+            return const Center(
+              child: SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              ),
+            );
+          },
+        ),
+      );
+    } else {
+      content = Center(
+        child: Text(
+          initial,
+          style: const TextStyle(
+            fontSize: 38,
+            fontWeight: FontWeight.w800,
+            color: Colors.white,
+          ),
+        ),
+      );
+    }
+
+    final bool hasImage = _profileImage != null || (_photoUrl != null && _photoUrl!.isNotEmpty);
+
+    return Container(
+      width: 88,
+      height: 88,
+      decoration: BoxDecoration(
+        gradient: !hasImage
+            ? const LinearGradient(
+                colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              )
+            : null,
+        color: hasImage ? (isDark ? const Color(0xFF334155) : Colors.grey.shade200) : null,
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: isDark ? const Color(0xFF312E81) : const Color(0xFFEEF2FF),
+          width: 3,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF6366F1).withValues(alpha: 0.25),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: content,
     );
   }
 
@@ -592,50 +846,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             children: [
               GestureDetector(
                 onTap: _showPhotoSourceBottomSheet,
-                child: Container(
-                  width: 88,
-                  height: 88,
-                  decoration: BoxDecoration(
-                    gradient: _profileImage == null
-                        ? const LinearGradient(
-                            colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                          )
-                        : null,
-                    color: _profileImage != null ? (isDark ? const Color(0xFF334155) : Colors.grey.shade200) : null,
-                    shape: BoxShape.circle,
-                    image: _profileImage != null
-                        ? DecorationImage(
-                            image: FileImage(_profileImage!),
-                            fit: BoxFit.cover,
-                          )
-                        : null,
-                    border: Border.all(
-                      color: isDark ? const Color(0xFF312E81) : const Color(0xFFEEF2FF),
-                      width: 3,
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFF6366F1).withValues(alpha: 0.25),
-                        blurRadius: 16,
-                        offset: const Offset(0, 6),
-                      ),
-                    ],
-                  ),
-                  child: _profileImage == null
-                      ? Center(
-                          child: Text(
-                            _fullName.isNotEmpty ? _fullName[0].toUpperCase() : 'U',
-                            style: const TextStyle(
-                              fontSize: 38,
-                              fontWeight: FontWeight.w800,
-                              color: Colors.white,
-                            ),
-                          ),
-                        )
-                      : null,
-                ),
+                child: _buildAvatar(isDark),
               ),
               Positioned(
                 bottom: 0,

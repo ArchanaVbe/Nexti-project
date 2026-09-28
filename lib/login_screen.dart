@@ -36,6 +36,7 @@ class _LoginScreenState extends State<LoginScreen> {
       'uid': user.uid,
       'email': user.email,
       'displayName': user.displayName ?? '',
+      'photoUrl': user.photoURL ?? '',
       'authProvider': authProvider,
       'lastLogin': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));

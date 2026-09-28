@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../models/destination.dart';
 import 'create_trip_screen.dart';
 
@@ -112,18 +113,48 @@ class HomeTabScreen extends StatelessWidget {
             const SizedBox(width: 4),
             GestureDetector(
               onTap: () => onNavigateTab?.call(3), // Navigate to Profile tab
-              child: Container(
-                width: 38,
-                height: 38,
-                decoration: const BoxDecoration(
-                  color: Color(0xFF6366F1),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.person_rounded,
-                  color: Colors.white,
-                  size: 22,
-                ),
+              child: Builder(
+                builder: (context) {
+                  final user = FirebaseAuth.instance.currentUser;
+                  final photoUrl = user?.photoURL;
+                  final initial = (user?.displayName != null && user!.displayName!.trim().isNotEmpty)
+                      ? user.displayName!.trim()[0].toUpperCase()
+                      : ((user?.email != null && user!.email!.isNotEmpty)
+                          ? user.email![0].toUpperCase()
+                          : 'U');
+
+                  return Container(
+                    width: 38,
+                    height: 38,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF6366F1),
+                      shape: BoxShape.circle,
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: (photoUrl != null && photoUrl.isNotEmpty)
+                        ? Image.network(
+                            photoUrl,
+                            width: 38,
+                            height: 38,
+                            fit: BoxFit.cover,
+                            errorBuilder: (context, error, stackTrace) => const Icon(
+                              Icons.person_rounded,
+                              color: Colors.white,
+                              size: 22,
+                            ),
+                          )
+                        : Center(
+                            child: Text(
+                              initial,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                            ),
+                          ),
+                  );
+                },
               ),
             ),
           ],
@@ -134,12 +165,19 @@ class HomeTabScreen extends StatelessWidget {
 
   Widget _buildGreeting(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final user = FirebaseAuth.instance.currentUser;
+    String greetingName = 'Explorer';
+    if (user?.displayName != null && user!.displayName!.trim().isNotEmpty) {
+      greetingName = user.displayName!.trim().split(' ').first;
+    } else if (user?.email != null && user!.email!.isNotEmpty) {
+      greetingName = user.email!.split('@').first;
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Hello, Archana \u{1F44B}',
+          'Hello, $greetingName \u{1F44B}',
           style: TextStyle(
             fontSize: 24,
             fontWeight: FontWeight.w800,
