@@ -79,22 +79,29 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // 2. Google Sign-In
+  // 2. Google Sign-In (Fixed: Account Picker Dialog Always Displayed)
   Future<void> _handleGoogleLogin() async {
     setState(() => _isLoading = true);
     try {
+      // 1. Clear previous session cache to guarantee the account chooser bottom sheet displays
+      await _googleSignIn.signOut();
+
+      // 2. Prompt user with the Google account chooser bottom sheet
       final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
       if (googleUser == null) {
-        setState(() => _isLoading = false);
-        return; // User canceled the sign-in prompt
+        // User backed out or tapped outside the bottom sheet
+        if (mounted) setState(() => _isLoading = false);
+        return;
       }
 
+      // 3. Extract authentication tokens from the selected Google account
       final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
       final AuthCredential credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );
 
+      // 4. Authenticate into Firebase
       final UserCredential userCredential = await _auth.signInWithCredential(credential);
       if (userCredential.user != null) {
         _storeUserData(userCredential.user!, 'google').catchError((e) {
@@ -111,7 +118,7 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // 3. Updated Forgot Password Handler
+  // 3. Forgot Password Handler
   void _handleForgotPassword() {
     final resetController = TextEditingController(text: _emailController.text.trim());
 
@@ -363,7 +370,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const SizedBox(width: 48), // Balancing spacer
+                        const SizedBox(width: 48),
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: const [
