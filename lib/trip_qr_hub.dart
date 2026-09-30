@@ -24,7 +24,15 @@ class _TripQrHubState extends State<TripQrHub> {
         'tripName': 'NextTripia Expedition',
         'destination': 'Gokarna Beach Trail',
         'createdBy': user?.uid ?? 'anonymous',
-        'members': [user?.uid ?? 'anonymous'],
+        'memberUids': [user?.uid ?? 'anonymous'],
+        'members': [
+          {
+            'uid': user?.uid ?? 'anonymous',
+            'displayName': user?.displayName ?? 'Organizer',
+            'email': user?.email ?? '',
+            'joinedAt': DateTime.now().toIso8601String(),
+          }
+        ],
         'createdAt': FieldValue.serverTimestamp(),
       });
 
@@ -113,21 +121,11 @@ class _TripQrHubState extends State<TripQrHub> {
                     side: const BorderSide(color: Colors.black87),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
-                  onPressed: () async {
-                    final joinedTripId = await Navigator.push<String>(
+                  onPressed: () {
+                    Navigator.push(
                       context,
                       MaterialPageRoute(builder: (context) => const QrScannerScreen()),
                     );
-
-                    if (!context.mounted) return;
-                    if (joinedTripId != null) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Joined trip ID: $joinedTripId'),
-                          backgroundColor: Colors.green.shade700,
-                        ),
-                      );
-                    }
                   },
                 ),
               ),

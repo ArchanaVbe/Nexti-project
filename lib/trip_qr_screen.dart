@@ -31,7 +31,6 @@ class _TripQrScreenState extends State<TripQrScreen> {
     setState(() => _isSharing = true);
 
     try {
-      // Small frame delay to ensure rendering is complete
       await Future.delayed(const Duration(milliseconds: 60));
 
       final boundary = _qrCardKey.currentContext?.findRenderObject()
@@ -55,7 +54,6 @@ class _TripQrScreenState extends State<TripQrScreen> {
         order: img.ChannelOrder.rgba,
       );
 
-      // Encode image to genuine JPEG bytes
       final List<int> jpegBytes = img.encodeJpg(convertedImage, quality: 95);
 
       final tempDir = await getTemporaryDirectory();
@@ -73,7 +71,7 @@ class _TripQrScreenState extends State<TripQrScreen> {
         ShareParams(
           files: [xFile],
           text:
-              'Join my trip "${widget.tripName}" on NexTripia!\nTrip Code: ${widget.tripId}\nScan this QR code in the app to join.',
+              'Join my trip "${widget.tripName}" on NextTripia!\nTrip Code: ${widget.tripId}\nLink: nexttripia://trip/join?code=${widget.tripId}',
           subject: 'Trip Invite: ${widget.tripName}',
         ),
       );
@@ -95,7 +93,8 @@ class _TripQrScreenState extends State<TripQrScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final String qrPayload = 'nexttripia:join:${widget.tripId}';
+    // Formatted as custom URI scheme so external camera and Google Lens trigger your app
+    final String qrPayload = 'nexttripia://trip/join?code=${widget.tripId}';
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
@@ -195,7 +194,7 @@ class _TripQrScreenState extends State<TripQrScreen> {
 
               const SizedBox(height: 28),
 
-              // Button: "Share QR Code"
+              // Share QR Code Button
               SizedBox(
                 width: double.infinity,
                 height: 52,

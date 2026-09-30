@@ -1,12 +1,10 @@
-
-
-
-
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'services/presence_service.dart';
+import 'services/trip_invite_service.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -34,7 +32,7 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  // Helper to persist user profile data in Cloud Firestore and local preferences
+  // Helper to persist user profile, local preferences, and atomically increment login count
   Future<void> _storeUserData(User user, String authProvider) async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -54,7 +52,22 @@ class _LoginScreenState extends State<LoginScreen> {
       'photoUrl': user.photoURL ?? '',
       'authProvider': authProvider,
       'lastLogin': FieldValue.serverTimestamp(),
+      'loginCount': FieldValue.increment(1), // Increment total sign-in counter
     }, SetOptions(merge: true));
+  }
+
+  // Central post-auth coordinator for presence and QR invite redirection
+  Future<void> _onLoginSuccess(User user) async {
+    // 1. Activate socket heartbeat presence tracking
+    PresenceService.trackUserPresence(user.uid);
+
+    // 2. Check if user opened the app through an external QR code invite while logged out
+    final joinedPendingTrip = await TripInviteService.completePendingInviteIfAny(context, user);
+
+    if (!joinedPendingTrip && mounted) {
+      setState(() => _isLoading = false);
+      Navigator.pushReplacementNamed(context, '/home');
+    }
   }
 
   // 1. Email & Password Sign In
@@ -69,14 +82,8 @@ class _LoginScreenState extends State<LoginScreen> {
       );
 
       if (credential.user != null) {
-        // Run Firestore save in background without freezing the UI
-        _storeUserData(credential.user!, 'email_password').catchError((e) {
-          debugPrint('Firestore save error: $e');
-        });
-
-        if (!mounted) return;
-        setState(() => _isLoading = false);
-        Navigator.pushReplacementNamed(context, '/home');
+        await _storeUserData(credential.user!, 'email_password');
+        await _onLoginSuccess(credential.user!);
       }
     } on FirebaseAuthException catch (e) {
       if (mounted) setState(() => _isLoading = false);
@@ -95,38 +102,33 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // 2. Google Sign-In (Fixed: Account Picker Dialog Always Displayed)
+  // 2. Google Sign-In
   Future<void> _handleGoogleLogin() async {
     setState(() => _isLoading = true);
     try {
-      // 1. Clear previous session cache to guarantee the account chooser bottom sheet displays
+      // 1. Clear previous session cache so account chooser dialog displays every time
       await _googleSignIn.signOut();
 
       // 2. Prompt user with the Google account chooser bottom sheet
       final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
       if (googleUser == null) {
-        // User backed out or tapped outside the bottom sheet
+        // User closed or canceled account selection
         if (mounted) setState(() => _isLoading = false);
         return;
       }
 
-      // 3. Extract authentication tokens from the selected Google account
+      // 3. Extract authentication tokens from selected Google account
       final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
       final AuthCredential credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );
 
-      // 4. Authenticate into Firebase
+      // 4. Authenticate with Firebase
       final UserCredential userCredential = await _auth.signInWithCredential(credential);
       if (userCredential.user != null) {
-        _storeUserData(userCredential.user!, 'google').catchError((e) {
-          debugPrint('Firestore save error: $e');
-        });
-
-        if (!mounted) return;
-        setState(() => _isLoading = false);
-        Navigator.pushReplacementNamed(context, '/home');
+        await _storeUserData(userCredential.user!, 'google');
+        await _onLoginSuccess(userCredential.user!);
       }
     } catch (e) {
       if (mounted) setState(() => _isLoading = false);
@@ -277,14 +279,8 @@ class _LoginScreenState extends State<LoginScreen> {
                         password: signUpPasswordController.text,
                       );
                       if (cred.user != null) {
-                        _storeUserData(cred.user!, 'email_password').catchError((e) {
-                          debugPrint('Firestore save error: $e');
-                        });
-
-                        if (!mounted) return;
-                        setState(() => _isLoading = false);
-                        _showSuccessSnackBar('Account created! Welcome.');
-                        Navigator.pushReplacementNamed(context, '/home');
+                        await _storeUserData(cred.user!, 'email_password');
+                        await _onLoginSuccess(cred.user!);
                       }
                     } on FirebaseAuthException catch (e) {
                       if (mounted) setState(() => _isLoading = false);
@@ -325,7 +321,7 @@ class _LoginScreenState extends State<LoginScreen> {
       resizeToAvoidBottomInset: false,
       body: Stack(
         children: [
-          // 1. Nature background image
+          // 1. Background image
           Positioned(
             bottom: 0,
             left: 0,

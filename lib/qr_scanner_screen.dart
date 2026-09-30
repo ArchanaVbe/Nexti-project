@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:image_picker/image_picker.dart';
+import 'services/trip_invite_service.dart';
 
 class QrScannerScreen extends StatefulWidget {
   const QrScannerScreen({super.key});
@@ -25,14 +26,14 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
 
     String tripId = rawCode.trim();
 
-    // 1. Extract trip ID from prefix or URL
-    if (tripId.startsWith('nexttripia:join:')) {
-      tripId = tripId.replaceFirst('nexttripia:join:', '').trim();
-    } else if (tripId.contains('code=')) {
+    // 1. Extract trip ID from URL query parameters, custom URI scheme, or legacy prefix
+    if (tripId.contains('code=')) {
       final uri = Uri.tryParse(tripId);
       if (uri != null && uri.queryParameters['code'] != null) {
         tripId = uri.queryParameters['code']!;
       }
+    } else if (tripId.startsWith('nexttripia:join:')) {
+      tripId = tripId.replaceFirst('nexttripia:join:', '').trim();
     }
 
     if (tripId.isEmpty) {
@@ -42,10 +43,13 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
       return;
     }
 
+    // Stop scanner camera stream
+    await _scannerController.stop();
+
     if (!mounted) return;
-    _showFeedback('Trip code scanned: $tripId');
-    // Return extracted tripId to caller so it automatically fills the input field and triggers approval
-    Navigator.pop(context, tripId);
+
+    // 2. Route through Auth Gate to check login status
+    await TripInviteService.processIncomingTripCode(context, tripId);
   }
 
   Future<void> _pickImageFromGallery() async {
@@ -58,7 +62,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
       if (capture != null && capture.barcodes.isNotEmpty) {
         for (final barcode in capture.barcodes) {
           if (barcode.rawValue != null && barcode.rawValue!.isNotEmpty) {
-            _handleBarcodeDetection(barcode.rawValue!);
+            await _handleBarcodeDetection(barcode.rawValue!);
             return;
           }
         }
