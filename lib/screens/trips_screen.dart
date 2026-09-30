@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'trip_details_screen.dart';
 
@@ -21,18 +22,72 @@ class _TripsScreenState extends State<TripsScreen> {
 
   Future<void> _loadTrips() async {
     final prefs = await SharedPreferences.getInstance();
-    List<String> savedTrips = prefs.getStringList('saved_trips') ?? [];
+    final user = FirebaseAuth.instance.currentUser;
+    final userEmail = user?.email?.trim().toLowerCase() ??
+        prefs.getString('user_profile_email')?.trim().toLowerCase() ?? '';
+    final key = userEmail.isNotEmpty ? 'saved_trips_$userEmail' : 'saved_trips';
+    List<String> savedTrips = prefs.getStringList(key) ?? [];
+
+    // If user list is empty, migrate any legacy trips created with this email
+    if (userEmail.isNotEmpty && savedTrips.isEmpty) {
+      final legacy = prefs.getStringList('saved_trips') ?? [];
+      final List<String> matching = [];
+      for (final t in legacy) {
+        try {
+          final decoded = jsonDecode(t) as Map<String, dynamic>;
+          final tripEmail = (decoded['userEmail'] ?? decoded['creatorEmail'] ?? '').toString().trim().toLowerCase();
+          if (tripEmail == userEmail) {
+            matching.add(t);
+          }
+        } catch (_) {}
+      }
+      if (matching.isNotEmpty) {
+        savedTrips = matching;
+        await prefs.setStringList(key, savedTrips);
+      }
+    }
+
+    if (!mounted) return;
     setState(() {
-      _savedTrips = savedTrips.map((e) => jsonDecode(e) as Map<String, dynamic>).toList();
+      _savedTrips = savedTrips
+          .map((e) {
+            try {
+              return jsonDecode(e) as Map<String, dynamic>;
+            } catch (_) {
+              return <String, dynamic>{};
+            }
+          })
+          .where((trip) => trip.isNotEmpty)
+          .where((trip) {
+            if (userEmail.isNotEmpty) {
+              final tripEmail = (trip['userEmail'] ?? trip['creatorEmail'] ?? '').toString().trim().toLowerCase();
+              return tripEmail.isEmpty || tripEmail == userEmail;
+            }
+            return true;
+          })
+          .toList();
     });
   }
 
   Future<void> _deleteTrip(int index) async {
     final prefs = await SharedPreferences.getInstance();
-    List<String> savedTripsStr = prefs.getStringList('saved_trips') ?? [];
-    if (index >= 0 && index < savedTripsStr.length) {
-      savedTripsStr.removeAt(index);
-      await prefs.setStringList('saved_trips', savedTripsStr);
+    final user = FirebaseAuth.instance.currentUser;
+    final userEmail = user?.email?.trim().toLowerCase() ??
+        prefs.getString('user_profile_email')?.trim().toLowerCase() ?? '';
+    final key = userEmail.isNotEmpty ? 'saved_trips_$userEmail' : 'saved_trips';
+    List<String> savedTripsStr = prefs.getStringList(key) ?? [];
+    if (index >= 0 && index < _savedTrips.length) {
+      final tripToDelete = _savedTrips[index];
+      savedTripsStr.removeWhere((item) {
+        try {
+          final decoded = jsonDecode(item);
+          return decoded['tripCode'] == tripToDelete['tripCode'] ||
+              decoded['id'] == tripToDelete['id'];
+        } catch (_) {
+          return false;
+        }
+      });
+      await prefs.setStringList(key, savedTripsStr);
       setState(() {
         _savedTrips.removeAt(index);
       });

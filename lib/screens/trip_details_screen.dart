@@ -763,12 +763,14 @@ Plan crafted with NexTripia-AI Travel Companion!
                       children: [
                         const Icon(Icons.location_on, size: 14, color: Color(0xFF6366F1)),
                         const SizedBox(width: 4),
-                        Text(
-                          'Karnataka, India',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                            fontWeight: FontWeight.w600,
+                        Expanded(
+                          child: Text(
+                            'Karnataka, India',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
                       ],
@@ -897,14 +899,17 @@ Plan crafted with NexTripia-AI Travel Companion!
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                'Trip Checklist ($visitedCount of $totalPlaces Visited)',
-                style: TextStyle(
-                  fontSize: 13.5,
-                  fontWeight: FontWeight.bold,
-                  color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
+              Expanded(
+                child: Text(
+                  'Trip Checklist ($visitedCount of $totalPlaces Visited)',
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.bold,
+                    color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
+                  ),
                 ),
               ),
+              const SizedBox(width: 8),
               Text(
                 '${(progress * 100).toInt()}%',
                 style: const TextStyle(
@@ -948,12 +953,14 @@ Plan crafted with NexTripia-AI Travel Companion!
                 ),
               ),
               const SizedBox(width: 8),
-              Text(
-                'Daily Travel Schedule',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                  color: isDark ? Colors.white : const Color(0xFF0F172A),
+              Expanded(
+                child: Text(
+                  'Daily Travel Schedule',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: isDark ? Colors.white : const Color(0xFF0F172A),
+                  ),
                 ),
               ),
             ],
@@ -1154,23 +1161,31 @@ Plan crafted with NexTripia-AI Travel Companion!
                                         ],
                                       ),
                                       const SizedBox(height: 6),
-                                      Row(
+                                      Wrap(
+                                        alignment: WrapAlignment.spaceBetween,
+                                        crossAxisAlignment: WrapCrossAlignment.center,
+                                        spacing: 8,
+                                        runSpacing: 4,
                                         children: [
-                                          Icon(
-                                            Icons.access_time_rounded,
-                                            size: 13,
-                                            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                          Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                Icons.access_time_rounded,
+                                                size: 13,
+                                                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                              ),
+                                              const SizedBox(width: 4),
+                                              Text(
+                                                act['time']!,
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                              ),
+                                            ],
                                           ),
-                                          const SizedBox(width: 4),
-                                          Text(
-                                            act['time']!,
-                                            style: TextStyle(
-                                              fontSize: 12,
-                                              color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                                              fontWeight: FontWeight.w500,
-                                            ),
-                                          ),
-                                          const Spacer(),
                                           Text(
                                             act['period']!,
                                             style: TextStyle(
@@ -1217,12 +1232,14 @@ Plan crafted with NexTripia-AI Travel Companion!
                 ),
               ),
               const SizedBox(width: 8),
-              Text(
-                'Selected Places & Map Waypoints',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                  color: isDark ? Colors.white : const Color(0xFF0F172A),
+              Expanded(
+                child: Text(
+                  'Selected Places & Map Waypoints',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: isDark ? Colors.white : const Color(0xFF0F172A),
+                  ),
                 ),
               ),
             ],
@@ -1286,12 +1303,14 @@ Plan crafted with NexTripia-AI Travel Companion!
             children: [
               const Icon(Icons.lightbulb_outline_rounded, color: Color(0xFFEAB308), size: 22),
               const SizedBox(width: 8),
-              Text(
-                'Traveler Tips & Local Highlights',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w800,
-                  color: isDark ? Colors.white : const Color(0xFF1E1B4B),
+              Expanded(
+                child: Text(
+                  'Traveler Tips & Local Highlights',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: isDark ? Colors.white : const Color(0xFF1E1B4B),
+                  ),
                 ),
               ),
             ],

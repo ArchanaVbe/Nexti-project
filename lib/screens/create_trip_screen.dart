@@ -9,6 +9,28 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'trip_details_screen.dart';
 import '../trip_qr_screen.dart';
 
+/// Automatically capitalizes the first letter of entered text
+class FirstLetterCapitalizationFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    if (newValue.text.isEmpty) return newValue;
+    final text = newValue.text;
+    final firstChar = text[0];
+    final upperFirst = firstChar.toUpperCase();
+    if (firstChar != upperFirst) {
+      final updatedText = upperFirst + text.substring(1);
+      return newValue.copyWith(
+        text: updatedText,
+        selection: newValue.selection,
+      );
+    }
+    return newValue;
+  }
+}
+
 class CreateTripScreen extends StatefulWidget {
   final bool isHost;
   final String? tripCode;
@@ -31,6 +53,30 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   final TextEditingController _endDateController = TextEditingController();
   final TextEditingController _groupSizeController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+
+  DateTime? _startDate;
+  DateTime? _endDate;
+
+  // Specific error warnings for Step 1 details inputs
+  String? _destinationError;
+  String? _startDateError;
+  String? _endDateError;
+  String? _groupSizeError;
+  String? _stepWarningMessage;
+  int _maxStepReached = 1;
+
+  DateTime? _parseDate(String text) {
+    try {
+      final parts = text.split('/');
+      if (parts.length == 3) {
+        final day = int.parse(parts[0]);
+        final month = int.parse(parts[1]);
+        final year = int.parse(parts[2]);
+        return DateTime(year, month, day);
+      }
+    } catch (_) {}
+    return null;
+  }
 
   int _currentStep = 1;
   final List<String> _selectedPlaces = [];
@@ -69,14 +115,21 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
   void _applyTripData(Map<String, dynamic> data) {
     if (data['destination'] != null && data['destination'].toString().isNotEmpty) {
-      _destinationController.text = data['destination'].toString();
+      String dest = data['destination'].toString().trim();
+      if (dest.length > 100) dest = dest.substring(0, 100);
+      if (dest.isNotEmpty) {
+        dest = dest[0].toUpperCase() + dest.substring(1);
+      }
+      _destinationController.text = dest;
       _fetchPlacesFromGoogle(_destinationController.text);
     }
     if (data['startDate'] != null) {
       _startDateController.text = data['startDate'].toString();
+      _startDate = _parseDate(_startDateController.text);
     }
     if (data['endDate'] != null) {
       _endDateController.text = data['endDate'].toString();
+      _endDate = _parseDate(_endDateController.text);
     }
     if (data['groupSize'] != null) {
       _groupSizeController.text = data['groupSize'].toString();
@@ -147,7 +200,8 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   }
 
   void _listenToTripUpdates() {
-    _tripSubscription = FirebaseFirestore.instance
+    try {
+      _tripSubscription = FirebaseFirestore.instance
         .collection('trips')
         .doc(_tripCode)
         .snapshots()
@@ -212,6 +266,9 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     }, onError: (e) {
       debugPrint('Error listening to trip updates: $e');
     });
+    } catch (e) {
+      debugPrint('Error initializing trip listener: $e');
+    }
   }
 
   Future<void> _showHostApprovalDialog(Map req) async {
@@ -369,7 +426,11 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   Future<void> _lookupAndApplyTrip(String code) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final savedTrips = prefs.getStringList('saved_trips') ?? [];
+      final user = FirebaseAuth.instance.currentUser;
+      final userEmail = user?.email?.trim().toLowerCase() ??
+          prefs.getString('user_profile_email')?.trim().toLowerCase() ?? '';
+      final userKey = userEmail.isNotEmpty ? 'saved_trips_$userEmail' : 'saved_trips';
+      final savedTrips = prefs.getStringList(userKey) ?? (prefs.getStringList('saved_trips') ?? []);
       final cleanCode = code.trim().toUpperCase();
 
       for (final tripStr in savedTrips) {
@@ -485,43 +546,193 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     }
   }
 
-  Widget _buildStepIndicator(String label, String number, bool isActive, bool isDark) {
-    return Column(
-      children: [
-        Container(
-          width: 32,
-          height: 32,
-          decoration: BoxDecoration(
-            color: isActive
-                ? const Color(0xFF6366F1)
-                : (isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9)),
-            shape: BoxShape.circle,
-            border: !isActive && isDark
-                ? Border.all(color: const Color(0xFF334155))
-                : null,
-          ),
-          child: Center(
-            child: Text(
-              number,
-              style: TextStyle(
-                color: isActive ? Colors.white : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF94A3B8)),
-                fontWeight: FontWeight.bold,
+  bool _validateStep1({bool showWarning = false}) {
+    bool hasError = false;
+    String? destErr;
+    String? startErr;
+    String? endErr;
+    String? groupErr;
+
+    final destText = _destinationController.text.trim();
+    if (destText.isEmpty) {
+      destErr = 'Please enter a destination';
+      hasError = true;
+    } else if (destText.length > 100) {
+      destErr = 'Destination must be within 100 characters';
+      hasError = true;
+    }
+
+    final startText = _startDateController.text.trim();
+    if (startText.isEmpty) {
+      startErr = 'Please select a start date';
+      hasError = true;
+    }
+
+    final endText = _endDateController.text.trim();
+    if (endText.isEmpty) {
+      endErr = 'Please select an end date';
+      hasError = true;
+    } else if (_startDate != null && _endDate != null && _endDate!.isBefore(_startDate!)) {
+      endErr = 'End date must be on or after start date';
+      hasError = true;
+    }
+
+    if (_isHost) {
+      final groupText = _groupSizeController.text.trim();
+      if (groupText.isEmpty) {
+        groupErr = 'Please enter group size';
+        hasError = true;
+      } else {
+        final size = int.tryParse(groupText);
+        if (size == null || size <= 0) {
+          groupErr = 'Please enter a valid group size (at least 1)';
+          hasError = true;
+        }
+      }
+    }
+
+    setState(() {
+      _destinationError = destErr;
+      _startDateError = startErr;
+      _endDateError = endErr;
+      _groupSizeError = groupErr;
+      if (hasError && showWarning) {
+        _stepWarningMessage = 'Please fill previous sections first.';
+      } else if (!hasError) {
+        _stepWarningMessage = null;
+      }
+    });
+
+    if (hasError && showWarning) {
+      _showFillPreviousWarning();
+    }
+
+    return !hasError;
+  }
+
+  void _showFillPreviousWarning([String message = 'Please fill previous sections first.']) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
               ),
             ),
-          ),
+          ],
         ),
-        const SizedBox(height: 8),
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 12,
-            color: isActive
-                ? (isDark ? const Color(0xFF818CF8) : const Color(0xFF6366F1))
-                : (isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8)),
-            fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
-          ),
+        backgroundColor: const Color(0xFFEF4444),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  Future<void> _onStepTapped(int targetStep) async {
+    if (targetStep == _currentStep) return;
+
+    if (targetStep < _currentStep) {
+      setState(() {
+        _stepWarningMessage = null;
+        _currentStep = targetStep;
+      });
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(0);
+      }
+      return;
+    }
+
+    // User is tapping 2, 3, or 4 without completing step 1
+    if (!_validateStep1(showWarning: true)) {
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(0);
+      }
+      return;
+    }
+
+    // If jumping ahead of the next unvisited step
+    if (targetStep > _currentStep + 1 && targetStep > _maxStepReached) {
+      setState(() {
+        _stepWarningMessage = 'Please fill previous sections first.';
+      });
+      _showFillPreviousWarning();
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(0);
+      }
+      return;
+    }
+
+    if (_currentStep == 1) {
+      _fetchPlacesFromGoogle(_destinationController.text.trim());
+      await _syncTripToFirestore();
+    } else if ((_isHost && _currentStep == 3) || (!_isHost && _currentStep == 2)) {
+      await _syncPreferencesToFirestore();
+    }
+
+    setState(() {
+      _stepWarningMessage = null;
+      _currentStep = targetStep;
+      if (_currentStep > _maxStepReached) {
+        _maxStepReached = _currentStep;
+      }
+    });
+
+    if (_scrollController.hasClients) {
+      _scrollController.jumpTo(0);
+    }
+  }
+
+  Widget _buildStepIndicator(String label, String number, bool isActive, bool isDark, int stepIndex) {
+    return GestureDetector(
+      onTap: () => _onStepTapped(stepIndex),
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
+        child: Column(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: isActive
+                    ? const Color(0xFF6366F1)
+                    : (isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9)),
+                shape: BoxShape.circle,
+                border: !isActive && isDark
+                    ? Border.all(color: const Color(0xFF334155))
+                    : null,
+              ),
+              child: Center(
+                child: Text(
+                  number,
+                  style: TextStyle(
+                    color: isActive ? Colors.white : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF94A3B8)),
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                color: isActive
+                    ? (isDark ? const Color(0xFF818CF8) : const Color(0xFF6366F1))
+                    : (isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8)),
+                fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+          ],
         ),
-      ],
+      ),
     );
   }
 
@@ -534,17 +745,48 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     VoidCallback? onTap,
     TextInputType? keyboardType,
     required bool isDark,
+    String? errorText,
+    int? maxLength,
+    List<TextInputFormatter>? inputFormatters,
+    TextCapitalization textCapitalization = TextCapitalization.none,
+    ValueChanged<String>? onChanged,
   }) {
+    final bool hasError = errorText != null && errorText.isNotEmpty;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
-            color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
-          ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: hasError
+                    ? const Color(0xFFEF4444)
+                    : (isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155)),
+              ),
+            ),
+            if (maxLength != null)
+              ValueListenableBuilder<TextEditingValue>(
+                valueListenable: controller,
+                builder: (context, value, _) {
+                  final currentLen = value.text.length;
+                  return Text(
+                    '$currentLen / $maxLength',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: currentLen > maxLength
+                          ? const Color(0xFFEF4444)
+                          : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B)),
+                    ),
+                  );
+                },
+              ),
+          ],
         ),
         const SizedBox(height: 8),
         TextField(
@@ -552,11 +794,15 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           readOnly: readOnly,
           onTap: onTap,
           keyboardType: keyboardType,
+          inputFormatters: inputFormatters,
+          textCapitalization: textCapitalization,
+          onChanged: onChanged,
           style: TextStyle(
             color: isDark ? Colors.white : const Color(0xFF0F172A),
             fontWeight: FontWeight.w500,
           ),
           decoration: InputDecoration(
+            counterText: '',
             hintText: hint,
             hintStyle: TextStyle(
               color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
@@ -564,64 +810,160 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             ),
             prefixIcon: Icon(
               icon,
-              color: isDark ? const Color(0xFF818CF8) : const Color(0xFF64748B),
+              color: hasError
+                  ? const Color(0xFFEF4444)
+                  : (isDark ? const Color(0xFF818CF8) : const Color(0xFF64748B)),
             ),
             filled: true,
-            fillColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-            contentPadding: const EdgeInsets.symmetric(vertical: 16),
+            fillColor: hasError
+                ? (isDark ? const Color(0xFF450A0A).withValues(alpha: 0.3) : const Color(0xFFFEF2F2))
+                : (isDark ? const Color(0xFF1E293B) : Colors.white),
+            contentPadding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
               borderSide: BorderSide(
-                color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                color: hasError
+                    ? const Color(0xFFEF4444)
+                    : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                width: hasError ? 1.5 : 1.0,
               ),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
               borderSide: BorderSide(
-                color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                color: hasError
+                    ? const Color(0xFFEF4444)
+                    : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                width: hasError ? 1.5 : 1.0,
               ),
             ),
-            focusedBorder: const OutlineInputBorder(
-              borderRadius: BorderRadius.all(Radius.circular(12)),
-              borderSide: BorderSide(color: Color(0xFF6366F1), width: 2),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: const BorderRadius.all(Radius.circular(12)),
+              borderSide: BorderSide(
+                color: hasError ? const Color(0xFFEF4444) : const Color(0xFF6366F1),
+                width: 2,
+              ),
             ),
           ),
         ),
+        if (hasError) ...[
+          const SizedBox(height: 6),
+          Padding(
+            padding: const EdgeInsets.only(left: 4.0),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.error_outline_rounded,
+                  color: Color(0xFFEF4444),
+                  size: 15,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    errorText,
+                    style: const TextStyle(
+                      color: Color(0xFFEF4444),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         const SizedBox(height: 20),
       ],
     );
   }
 
-  Future<void> _selectDate(BuildContext context, TextEditingController controller) async {
+  Widget _buildDatePickerTheme(BuildContext context, bool isDark, Widget? child) {
+    return Theme(
+      data: Theme.of(context).copyWith(
+        colorScheme: isDark
+            ? const ColorScheme.dark(
+                primary: Color(0xFF6366F1),
+                onPrimary: Colors.white,
+                surface: Color(0xFF1E293B),
+                onSurface: Colors.white,
+              )
+            : const ColorScheme.light(
+                primary: Color(0xFF6366F1),
+                onPrimary: Colors.white,
+                onSurface: Color(0xFF0F172A),
+              ),
+      ),
+      child: child!,
+    );
+  }
+
+  Future<void> _selectStartDate(BuildContext context) async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
     final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    final initialDate = (_startDate != null && !_startDate!.isBefore(today))
+        ? _startDate!
+        : today;
+
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: DateTime.now(),
-      firstDate: DateTime.now(),
+      initialDate: initialDate,
+      firstDate: today,
       lastDate: DateTime(2101),
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: isDark
-                ? const ColorScheme.dark(
-                    primary: Color(0xFF6366F1),
-                    onPrimary: Colors.white,
-                    surface: Color(0xFF1E293B),
-                    onSurface: Colors.white,
-                  )
-                : const ColorScheme.light(
-                    primary: Color(0xFF6366F1), // header background color
-                    onPrimary: Colors.white, // header text color
-                    onSurface: Color(0xFF0F172A), // body text color
-                  ),
-          ),
-          child: child!,
-        );
-      },
+      builder: (context, child) => _buildDatePickerTheme(context, isDark, child),
     );
+
     if (picked != null) {
       setState(() {
-        controller.text = "${picked.day}/${picked.month}/${picked.year}";
+        _startDate = picked;
+        _startDateController.text = "${picked.day}/${picked.month}/${picked.year}";
+        _startDateError = null;
+        _stepWarningMessage = null;
+
+        // If existing end date is before new start date, clear it and prompt for update
+        if (_endDate != null && _endDate!.isBefore(picked)) {
+          _endDate = null;
+          _endDateController.clear();
+          _endDateError = 'Please select an end date on or after start date';
+        } else {
+          _endDateError = null;
+        }
+      });
+    }
+  }
+
+  Future<void> _selectEndDate(BuildContext context) async {
+    if (_startDate == null) {
+      setState(() {
+        _startDateError = 'Please select start date first';
+        _endDateError = 'Please select start date first';
+      });
+      return;
+    }
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final firstAllowedDate = DateTime(_startDate!.year, _startDate!.month, _startDate!.day);
+
+    final initialDate = (_endDate != null && !_endDate!.isBefore(firstAllowedDate))
+        ? _endDate!
+        : firstAllowedDate;
+
+    // Requirement 2: app should only allow users to select end date from the date of start and onwards only
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: initialDate,
+      firstDate: firstAllowedDate,
+      lastDate: DateTime(2101),
+      builder: (context, child) => _buildDatePickerTheme(context, isDark, child),
+    );
+
+    if (picked != null) {
+      setState(() {
+        _endDate = picked;
+        _endDateController.text = "${picked.day}/${picked.month}/${picked.year}";
+        _endDateError = null;
+        _stepWarningMessage = null;
       });
     }
   }
@@ -675,6 +1017,21 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           controller: _destinationController,
           readOnly: !_isHost,
           isDark: isDark,
+          errorText: _destinationError,
+          maxLength: 100,
+          textCapitalization: TextCapitalization.sentences,
+          inputFormatters: [
+            LengthLimitingTextInputFormatter(100),
+            FirstLetterCapitalizationFormatter(),
+          ],
+          onChanged: (val) {
+            if (_destinationError != null || _stepWarningMessage != null) {
+              setState(() {
+                _destinationError = null;
+                _stepWarningMessage = null;
+              });
+            }
+          },
           onTap: () {
             if (!_isHost) {
               ScaffoldMessenger.of(context).showSnackBar(
@@ -694,16 +1051,18 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           controller: _startDateController,
           readOnly: true,
           isDark: isDark,
-          onTap: () => _selectDate(context, _startDateController),
+          errorText: _startDateError,
+          onTap: () => _selectStartDate(context),
         ),
         _buildTextField(
           label: 'End Date',
-          hint: 'Select end date',
+          hint: 'Select end date (on or after start date)',
           icon: Icons.calendar_today_outlined,
           controller: _endDateController,
           readOnly: true,
           isDark: isDark,
-          onTap: () => _selectDate(context, _endDateController),
+          errorText: _endDateError,
+          onTap: () => _selectEndDate(context),
         ),
         _buildTextField(
           label: 'Group Size',
@@ -713,6 +1072,15 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           readOnly: !_isHost,
           keyboardType: TextInputType.number,
           isDark: isDark,
+          errorText: _groupSizeError,
+          onChanged: (val) {
+            if (_groupSizeError != null || _stepWarningMessage != null) {
+              setState(() {
+                _groupSizeError = null;
+                _stepWarningMessage = null;
+              });
+            }
+          },
           onTap: () {
             if (!_isHost) {
               ScaffoldMessenger.of(context).showSnackBar(
@@ -1043,13 +1411,15 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      'Trip Code: $sampleTripId',
-                      style: TextStyle(
-                        fontFamily: 'monospace',
-                        fontWeight: FontWeight.bold,
-                        fontSize: 13,
-                        color: isDark ? const Color(0xFF818CF8) : const Color(0xFF4F46E5),
+                    Expanded(
+                      child: Text(
+                        'Trip Code: $sampleTripId',
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                          color: isDark ? const Color(0xFF818CF8) : const Color(0xFF4F46E5),
+                        ),
                       ),
                     ),
                     InkWell(
@@ -1194,24 +1564,24 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       return Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          _buildStepIndicator('Details', '1', _currentStep >= 1, isDark),
+          _buildStepIndicator('Details', '1', _currentStep >= 1, isDark, 1),
           _buildStepDivider(_currentStep >= 2, isDark),
-          _buildStepIndicator('Group', '2', _currentStep >= 2, isDark),
+          _buildStepIndicator('Group', '2', _currentStep >= 2, isDark, 2),
           _buildStepDivider(_currentStep >= 3, isDark),
-          _buildStepIndicator('Preferences', '3', _currentStep >= 3, isDark),
+          _buildStepIndicator('Preferences', '3', _currentStep >= 3, isDark, 3),
           _buildStepDivider(_currentStep >= 4, isDark),
-          _buildStepIndicator('Show trip', '4', _currentStep >= 4, isDark),
+          _buildStepIndicator('Show trip', '4', _currentStep >= 4, isDark, 4),
         ],
       );
     } else {
       return Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          _buildStepIndicator('Details', '1', _currentStep >= 1, isDark),
+          _buildStepIndicator('Details', '1', _currentStep >= 1, isDark, 1),
           _buildStepDivider(_currentStep >= 2, isDark),
-          _buildStepIndicator('Preferences', '2', _currentStep >= 2, isDark),
+          _buildStepIndicator('Preferences', '2', _currentStep >= 2, isDark, 2),
           _buildStepDivider(_currentStep >= 3, isDark),
-          _buildStepIndicator('Show trip', '3', _currentStep >= 3, isDark),
+          _buildStepIndicator('Show trip', '3', _currentStep >= 3, isDark, 3),
         ],
       );
     }
@@ -1245,7 +1615,11 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
   Future<void> _saveTrip() async {
     final prefs = await SharedPreferences.getInstance();
-    List<String> savedTrips = prefs.getStringList('saved_trips') ?? [];
+    final user = FirebaseAuth.instance.currentUser;
+    final userEmail = user?.email?.trim().toLowerCase() ??
+        prefs.getString('user_profile_email')?.trim().toLowerCase() ?? '';
+    final storageKey = userEmail.isNotEmpty ? 'saved_trips_$userEmail' : 'saved_trips';
+    List<String> savedTrips = prefs.getStringList(storageKey) ?? [];
     
     final allCombinedPlaces = <String>{..._groupPlaces, ..._selectedPlaces}.toList();
     if (allCombinedPlaces.isEmpty) {
@@ -1261,6 +1635,8 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       'groupSize': _groupSizeController.text.trim(),
       'places': allCombinedPlaces,
       'isHost': _isHost,
+      'userEmail': userEmail,
+      'creatorEmail': userEmail,
     };
     
     savedTrips.removeWhere((item) {
@@ -1273,12 +1649,30 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     });
 
     savedTrips.add(jsonEncode(tripData));
-    await prefs.setStringList('saved_trips', savedTrips);
+    await prefs.setStringList(storageKey, savedTrips);
+
+    // If saving under a user key, clean up any previous instance from generic list
+    if (userEmail.isNotEmpty) {
+      final genericTrips = prefs.getStringList('saved_trips');
+      if (genericTrips != null) {
+        final updatedGeneric = genericTrips.where((item) {
+          try {
+            final decoded = jsonDecode(item);
+            return decoded['tripCode'] != _tripCode;
+          } catch (_) {
+            return true;
+          }
+        }).toList();
+        await prefs.setStringList('saved_trips', updatedGeneric);
+      }
+    }
     
     try {
       await FirebaseFirestore.instance.collection('trips').doc(_tripCode).set({
         'places': allCombinedPlaces,
         'status': 'completed',
+        'userEmail': userEmail,
+        'creatorEmail': userEmail,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     } catch (_) {}
@@ -1367,7 +1761,43 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                           : EdgeInsets.zero,
                       child: _buildStepper(isDark),
                     ),
-                    if (!isLastStep) const SizedBox(height: 32),
+                    if (_stepWarningMessage != null) ...[
+                      const SizedBox(height: 16),
+                      Padding(
+                        padding: isLastStep
+                            ? const EdgeInsets.symmetric(horizontal: 24)
+                            : EdgeInsets.zero,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEF4444).withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFFEF4444).withValues(alpha: 0.35)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.warning_amber_rounded, color: Color(0xFFEF4444), size: 20),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  _stepWarningMessage!,
+                                  style: const TextStyle(
+                                    color: Color(0xFFEF4444),
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              GestureDetector(
+                                onTap: () => setState(() => _stepWarningMessage = null),
+                                child: const Icon(Icons.close_rounded, color: Color(0xFFEF4444), size: 16),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                    if (!isLastStep) SizedBox(height: _stepWarningMessage != null ? 16 : 32),
 
                     _buildCurrentStep(isDark),
                   ],
@@ -1395,53 +1825,21 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                   onPressed: () async {
                     if (_currentStep < maxSteps) {
                       if (_currentStep == 1) {
-                        if (_destinationController.text.trim().isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Please enter a destination'),
-                              backgroundColor: Colors.redAccent,
-                              behavior: SnackBarBehavior.floating,
-                            ),
-                          );
+                        if (!_validateStep1(showWarning: false)) {
                           return;
                         }
-                        if (_startDateController.text.trim().isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Please select a start date'),
-                              backgroundColor: Colors.redAccent,
-                              behavior: SnackBarBehavior.floating,
-                            ),
-                          );
-                          return;
-                        }
-                        if (_endDateController.text.trim().isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Please select an end date'),
-                              backgroundColor: Colors.redAccent,
-                              behavior: SnackBarBehavior.floating,
-                            ),
-                          );
-                          return;
-                        }
-                        if (_isHost && _groupSizeController.text.trim().isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Please enter group size'),
-                              backgroundColor: Colors.redAccent,
-                              behavior: SnackBarBehavior.floating,
-                            ),
-                          );
-                          return;
-                        }
+
                         _fetchPlacesFromGoogle(_destinationController.text.trim());
                         await _syncTripToFirestore();
                       } else if ((_isHost && _currentStep == 3) || (!_isHost && _currentStep == 2)) {
                         await _syncPreferencesToFirestore();
                       }
                       setState(() {
+                        _stepWarningMessage = null;
                         _currentStep++;
+                        if (_currentStep > _maxStepReached) {
+                          _maxStepReached = _currentStep;
+                        }
                       });
                       if (_scrollController.hasClients) {
                         _scrollController.jumpTo(0);

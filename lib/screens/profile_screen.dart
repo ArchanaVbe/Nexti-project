@@ -19,7 +19,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String _fullName = 'Explorer';
   String _email = 'explorer@nextripia.ai';
   String _authProvider = 'Google Sign-In';
-  String _memberSince = 'September 2026';
   String? _photoUrl;
 
   bool _notificationsEnabled = true;
@@ -33,24 +32,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _loadUserProfile();
   }
 
-  String _formatDate(DateTime? date) {
-    if (date == null) return 'September 2026';
-    const months = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'
-    ];
-    return '${months[date.month - 1]} ${date.year}';
-  }
-
   Future<void> _loadUserProfile() async {
     final prefs = await SharedPreferences.getInstance();
 
     // 1. Fetch from Firebase Auth currentUser
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser != null) {
+      final emailLower = currentUser.email?.trim().toLowerCase() ?? '';
+      final savedScopedName = emailLower.isNotEmpty ? prefs.getString('user_profile_name_$emailLower') : null;
+      final savedGlobalName = prefs.getString('user_profile_name');
+      final effectiveName = savedScopedName ?? savedGlobalName;
+
       if (mounted) {
         setState(() {
-          if (currentUser.displayName != null && currentUser.displayName!.trim().isNotEmpty) {
+          if (effectiveName != null && effectiveName.trim().isNotEmpty) {
+            _fullName = effectiveName.trim();
+          } else if (currentUser.displayName != null && currentUser.displayName!.trim().isNotEmpty) {
             _fullName = currentUser.displayName!.trim();
           } else if (currentUser.email != null && currentUser.email!.isNotEmpty) {
             _fullName = currentUser.email!.split('@').first;
@@ -62,10 +59,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
           if (currentUser.photoURL != null && currentUser.photoURL!.isNotEmpty) {
             _photoUrl = currentUser.photoURL;
-          }
-
-          if (currentUser.metadata.creationTime != null) {
-            _memberSince = _formatDate(currentUser.metadata.creationTime);
           }
 
           if (currentUser.providerData.any((p) => p.providerId == 'google.com')) {
@@ -466,17 +459,32 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               const SizedBox(height: 18),
               const Text(
-                'Edit Profile Details',
+                'Edit User Name',
                 style: TextStyle(
                   fontSize: 20,
                   fontWeight: FontWeight.w800,
                   color: Color(0xFF1E1B4B),
                 ),
               ),
+              const SizedBox(height: 4),
+              const Text(
+                'You can change your display user name. Email address is tied to your account and cannot be modified.',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Color(0xFF64748B),
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
               const SizedBox(height: 16),
-              _buildTextField('Full Name', Icons.person_outline, nameController),
+              _buildTextField('User Name', Icons.person_outline, nameController),
               const SizedBox(height: 14),
-              _buildTextField('Email Address', Icons.email_outlined, emailController),
+              _buildTextField(
+                'Email Address',
+                Icons.email_outlined,
+                emailController,
+                readOnly: true,
+                helperText: 'Email linked to your account cannot be edited',
+              ),
               const SizedBox(height: 24),
               SizedBox(
                 width: double.infinity,
@@ -494,19 +502,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     final newName = nameController.text.trim().isNotEmpty
                         ? nameController.text.trim()
                         : _fullName;
-                    final newEmail = emailController.text.trim().isNotEmpty
-                        ? emailController.text.trim()
-                        : _email;
 
                     setState(() {
                       _fullName = newName;
-                      _email = newEmail;
                     });
 
                     // Save locally to SharedPreferences
                     final prefs = await SharedPreferences.getInstance();
                     await prefs.setString('user_profile_name', newName);
-                    await prefs.setString('user_profile_email', newEmail);
+                    final emailLower = _email.trim().toLowerCase();
+                    if (emailLower.isNotEmpty) {
+                      await prefs.setString('user_profile_name_$emailLower', newName);
+                    }
 
                     // Update in Firebase Auth and Firestore if logged in
                     final user = FirebaseAuth.instance.currentUser;
@@ -516,7 +523,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       }
                       FirebaseFirestore.instance.collection('users').doc(user.uid).set({
                         'displayName': newName,
-                        'email': newEmail,
                       }, SetOptions(merge: true)).catchError((e) {
                         debugPrint('Firestore update profile note: $e');
                       });
@@ -526,7 +532,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     Navigator.pop(ctx);
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
-                        content: Text('Profile updated successfully!'),
+                        content: Text('User name updated successfully!'),
                         backgroundColor: Color(0xFF10B981),
                         behavior: SnackBarBehavior.floating,
                       ),
@@ -545,41 +551,414 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  Widget _buildTextField(String label, IconData icon, TextEditingController controller) {
+  void _showFontSettingsBottomSheet() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) {
+          final currentFamily = AppTheme.fontFamilyNotifier.value;
+          final currentScale = AppTheme.fontScaleNotifier.value;
+
+          return Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(ctx).size.height * 0.88,
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 44,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF475569) : Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: isDark ? const Color(0xFF312E81) : const Color(0xFFEEF2FF),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(
+                        Icons.format_size_rounded,
+                        color: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF6366F1),
+                        size: 22,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Font Style & Size',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                          color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        Icons.close_rounded,
+                        color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                      ),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                Flexible(
+                  child: SingleChildScrollView(
+                    physics: const BouncingScrollPhysics(),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Section 1: Font Style / Family
+                        Text(
+                          'Choose Font Style',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                            color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Column(
+                          children: AppTheme.supportedFonts.map((font) {
+                            final fontName = font['name']!;
+                            final isSelected = currentFamily == fontName;
+
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 8.0),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(14),
+                                onTap: () async {
+                                  await AppTheme.setFontFamily(fontName);
+                                  setModalState(() {});
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                                  decoration: BoxDecoration(
+                                    color: isSelected
+                                        ? (isDark ? const Color(0xFF312E81).withValues(alpha: 0.5) : const Color(0xFFEEF2FF))
+                                        : (isDark ? const Color(0xFF0F172A) : Colors.white),
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(
+                                      color: isSelected
+                                          ? const Color(0xFF6366F1)
+                                          : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                                      width: isSelected ? 2 : 1,
+                                    ),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Container(
+                                        width: 32,
+                                        height: 32,
+                                        decoration: BoxDecoration(
+                                          color: isSelected
+                                              ? const Color(0xFF6366F1)
+                                              : (isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9)),
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: Icon(
+                                          isSelected ? Icons.check_rounded : Icons.font_download_outlined,
+                                          color: isSelected
+                                              ? Colors.white
+                                              : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B)),
+                                          size: 16,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              fontName,
+                                              style: TextStyle(
+                                                fontFamily: fontName,
+                                                fontSize: 16,
+                                                fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
+                                                color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
+                                              ),
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              font['description'] ?? '',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                        const SizedBox(height: 16),
+
+                        // Section 2: Font Size
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Font Size Scaling',
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w800,
+                                color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
+                              ),
+                            ),
+                            Text(
+                              '${(currentScale * 100).round()}%',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w800,
+                                color: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF6366F1),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+
+                        // Preset chips for quick font size selection
+                        Row(
+                          children: AppTheme.supportedFontSizes.map((preset) {
+                            final double scaleVal = preset['scale'] as double;
+                            final bool isPresetSelected = (currentScale - scaleVal).abs() < 0.04;
+
+                            return Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 3.0),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(12),
+                                  onTap: () async {
+                                    await AppTheme.setFontScale(scaleVal);
+                                    setModalState(() {});
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(vertical: 8),
+                                    decoration: BoxDecoration(
+                                      color: isPresetSelected
+                                          ? const Color(0xFF6366F1)
+                                          : (isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9)),
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(
+                                        color: isPresetSelected
+                                            ? const Color(0xFF6366F1)
+                                            : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                                      ),
+                                    ),
+                                    child: Column(
+                                      children: [
+                                        Text(
+                                          preset['label'] as String,
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: isPresetSelected
+                                                ? Colors.white
+                                                : (isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A)),
+                                          ),
+                                          textAlign: TextAlign.center,
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '${(scaleVal * 100).round()}%',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            color: isPresetSelected
+                                                ? Colors.white.withValues(alpha: 0.85)
+                                                : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B)),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                        const SizedBox(height: 12),
+
+                        // Fine-tuning Slider
+                        SliderTheme(
+                          data: SliderTheme.of(ctx).copyWith(
+                            activeTrackColor: const Color(0xFF6366F1),
+                            inactiveTrackColor: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                            thumbColor: const Color(0xFF6366F1),
+                            overlayColor: const Color(0xFF6366F1).withValues(alpha: 0.15),
+                            valueIndicatorColor: const Color(0xFF6366F1),
+                          ),
+                          child: Slider(
+                            value: currentScale.clamp(0.85, 1.30),
+                            min: 0.85,
+                            max: 1.30,
+                            divisions: 9,
+                            label: '${(currentScale * 100).round()}%',
+                            onChanged: (newVal) async {
+                              await AppTheme.setFontScale(double.parse(newVal.toStringAsFixed(2)));
+                              setModalState(() {});
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+
+                        // Actions Row: Reset to Default & Done
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                  side: BorderSide(
+                                    color: isDark ? const Color(0xFF475569) : const Color(0xFFCBD5E1),
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                ),
+                                icon: const Icon(Icons.refresh_rounded, size: 18),
+                                label: const Text(
+                                  'Reset to Default',
+                                  style: TextStyle(fontWeight: FontWeight.w700),
+                                ),
+                                onPressed: () async {
+                                  await AppTheme.resetTypography();
+                                  setModalState(() {});
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Reset to standard Times New Roman format (100%)'),
+                                        backgroundColor: Color(0xFF6366F1),
+                                        behavior: SnackBarBehavior.floating,
+                                      ),
+                                    );
+                                  }
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF6366F1),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                  elevation: 0,
+                                ),
+                                onPressed: () => Navigator.pop(ctx),
+                                child: const Text(
+                                  'Done',
+                                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildTextField(
+    String label,
+    IconData icon,
+    TextEditingController controller, {
+    bool readOnly = false,
+    String? helperText,
+  }) {
     return TextField(
       controller: controller,
-      style: const TextStyle(
-        color: Color(0xFF0F172A),
+      readOnly: readOnly,
+      style: TextStyle(
+        color: readOnly ? const Color(0xFF64748B) : const Color(0xFF0F172A),
         fontSize: 16,
         fontWeight: FontWeight.w700,
       ),
       cursorColor: const Color(0xFF6366F1),
       decoration: InputDecoration(
         labelText: label,
-        labelStyle: const TextStyle(
-          color: Color(0xFF334155),
+        labelStyle: TextStyle(
+          color: readOnly ? const Color(0xFF64748B) : const Color(0xFF334155),
           fontWeight: FontWeight.w700,
           fontSize: 14,
         ),
-        floatingLabelStyle: const TextStyle(
-          color: Color(0xFF4F46E5),
+        floatingLabelStyle: TextStyle(
+          color: readOnly ? const Color(0xFF64748B) : const Color(0xFF4F46E5),
           fontWeight: FontWeight.w800,
           fontSize: 14,
         ),
-        prefixIcon: Icon(icon, color: const Color(0xFF4F46E5), size: 22),
+        prefixIcon: Icon(icon, color: readOnly ? const Color(0xFF94A3B8) : const Color(0xFF4F46E5), size: 22),
+        suffixIcon: readOnly
+            ? const Padding(
+                padding: EdgeInsets.only(right: 12),
+                child: Icon(Icons.lock_outline_rounded, color: Color(0xFF94A3B8), size: 20),
+              )
+            : null,
+        helperText: helperText,
+        helperStyle: const TextStyle(
+          color: Color(0xFF64748B),
+          fontSize: 12,
+          fontWeight: FontWeight.w500,
+        ),
         filled: true,
-        fillColor: const Color(0xFFF8F9FE),
+        fillColor: readOnly ? const Color(0xFFF1F5F9) : const Color(0xFFF8F9FE),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: const BorderSide(color: Color(0xFF94A3B8), width: 1.5),
+          borderSide: BorderSide(
+            color: readOnly ? const Color(0xFFCBD5E1) : const Color(0xFF94A3B8),
+            width: 1.5,
+          ),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: const BorderSide(color: Color(0xFF94A3B8), width: 1.5),
+          borderSide: BorderSide(
+            color: readOnly ? const Color(0xFFCBD5E1) : const Color(0xFF94A3B8),
+            width: 1.5,
+          ),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: const BorderSide(color: Color(0xFF4F46E5), width: 2.2),
+          borderSide: BorderSide(
+            color: readOnly ? const Color(0xFFCBD5E1) : const Color(0xFF4F46E5),
+            width: 2.2,
+          ),
         ),
       ),
     );
@@ -963,14 +1342,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
             bgColor: isDark ? const Color(0xFF1E1B4B) : const Color(0xFFEEF2FF),
             label: 'Auth Method',
             value: _authProvider,
-          ),
-          _buildDivider(),
-          _buildDetailRow(
-            icon: Icons.calendar_today_rounded,
-            iconColor: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-            bgColor: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9),
-            label: 'Member Since',
-            value: _memberSince,
             isLast: true,
           ),
         ],
@@ -1176,6 +1547,79 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ],
               ),
             ),
+          ),
+          _buildDivider(),
+
+          // Font Style & Size (Typography Settings)
+          ListenableBuilder(
+            listenable: Listenable.merge([
+              AppTheme.fontFamilyNotifier,
+              AppTheme.fontScaleNotifier,
+            ]),
+            builder: (context, _) {
+              final fontName = AppTheme.fontFamilyNotifier.value;
+              final fontScale = AppTheme.fontScaleNotifier.value;
+              final percent = (fontScale * 100).round();
+
+              return ListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                leading: Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF312E81) : const Color(0xFFEEF2FF),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    Icons.format_size_rounded,
+                    color: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF6366F1),
+                    size: 20,
+                  ),
+                ),
+                title: Text(
+                  'Font Style & Size',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
+                  ),
+                ),
+                subtitle: Text(
+                  '$fontName • $percent% size',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                  ),
+                ),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        fontName == AppTheme.defaultFontFamily ? 'Standard' : fontName,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF4F46E5),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Icon(
+                      Icons.arrow_forward_ios_rounded,
+                      size: 14,
+                      color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+                    ),
+                  ],
+                ),
+                onTap: _showFontSettingsBottomSheet,
+              );
+            },
           ),
           _buildDivider(),
 

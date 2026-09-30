@@ -1,7 +1,12 @@
+
+
+
+
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -29,8 +34,18 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  // Helper to persist user profile data in Cloud Firestore
+  // Helper to persist user profile data in Cloud Firestore and local preferences
   Future<void> _storeUserData(User user, String authProvider) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (user.email != null && user.email!.isNotEmpty) {
+        await prefs.setString('user_profile_email', user.email!.trim().toLowerCase());
+      }
+      if (user.displayName != null && user.displayName!.isNotEmpty) {
+        await prefs.setString('user_profile_name', user.displayName!);
+      }
+    } catch (_) {}
+
     final userDoc = _firestore.collection('users').doc(user.uid);
     await userDoc.set({
       'uid': user.uid,

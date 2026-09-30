@@ -20,15 +20,27 @@ class NextTripiaApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<ThemeMode>(
-      valueListenable: AppTheme.themeModeNotifier,
-      builder: (context, currentMode, _) {
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        AppTheme.themeModeNotifier,
+        AppTheme.fontFamilyNotifier,
+        AppTheme.fontScaleNotifier,
+      ]),
+      builder: (context, _) {
         return MaterialApp(
           title: 'NextTripia AI',
           debugShowCheckedModeBanner: false,
-          theme: AppTheme.lightTheme,
-          darkTheme: AppTheme.darkTheme,
-          themeMode: currentMode,
+          theme: AppTheme.getLightTheme(AppTheme.fontFamilyNotifier.value),
+          darkTheme: AppTheme.getDarkTheme(AppTheme.fontFamilyNotifier.value),
+          themeMode: AppTheme.themeModeNotifier.value,
+          builder: (context, child) {
+            return MediaQuery(
+              data: MediaQuery.of(context).copyWith(
+                textScaler: TextScaler.linear(AppTheme.fontScaleNotifier.value),
+              ),
+              child: child ?? const SizedBox(),
+            );
+          },
           initialRoute: '/login',
           routes: {
             '/login': (context) => const LoginScreen(),

@@ -122,50 +122,14 @@ class HomeTabScreen extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 24),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        'Enter Trip Code',
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
-                          letterSpacing: 0.2,
-                        ),
-                      ),
-                      InkWell(
-                        onTap: () async {
-                          final scannedCode = await Navigator.push<String>(
-                            context,
-                            MaterialPageRoute(builder: (context) => const QrScannerScreen()),
-                          );
-                          if (scannedCode != null && scannedCode.isNotEmpty) {
-                            codeController.text = scannedCode;
-                            setModalState(() {});
-                          }
-                        },
-                        borderRadius: BorderRadius.circular(8),
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.qr_code_scanner_rounded, size: 16, color: Color(0xFF6366F1)),
-                              SizedBox(width: 4),
-                              Text(
-                                'Scan QR',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
-                                  color: Color(0xFF6366F1),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
+                  Text(
+                    'Enter Trip Code',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
+                      letterSpacing: 0.2,
+                    ),
                   ),
                   const SizedBox(height: 10),
                   TextField(
@@ -382,7 +346,11 @@ class HomeTabScreen extends StatelessWidget {
       // Local fallback lookup
       try {
         final prefs = await SharedPreferences.getInstance();
-        final savedTrips = prefs.getStringList('saved_trips') ?? [];
+        final userEmail = FirebaseAuth.instance.currentUser?.email?.trim().toLowerCase() ??
+            prefs.getString('user_profile_email')?.trim().toLowerCase() ??
+            '';
+        final key = userEmail.isNotEmpty ? 'saved_trips_$userEmail' : 'saved_trips';
+        final savedTrips = prefs.getStringList(key) ?? (prefs.getStringList('saved_trips') ?? []);
         for (final tripStr in savedTrips) {
           try {
             final Map<String, dynamic> trip = jsonDecode(tripStr);

@@ -4,20 +4,78 @@ import 'package:shared_preferences/shared_preferences.dart';
 class AppTheme {
   static const Color _seedColor = Color(0xFF6366F1); // Brand Indigo
 
-  // Reactive notifier for theme mode changes across the app
+  // Standard default typography settings
+  static const String defaultFontFamily = 'Times New Roman';
+  static const double defaultFontScale = 1.0;
+
+  // Reactive notifiers for theme mode, font style, and font scale changes across the app
   static final ValueNotifier<ThemeMode> themeModeNotifier =
       ValueNotifier<ThemeMode>(ThemeMode.light);
 
-  static const String _themePrefKey = 'is_dark_mode';
+  static final ValueNotifier<String> fontFamilyNotifier =
+      ValueNotifier<String>(defaultFontFamily);
 
-  /// Initialize theme mode from SharedPreferences on app launch
+  static final ValueNotifier<double> fontScaleNotifier =
+      ValueNotifier<double>(defaultFontScale);
+
+  static const String _themePrefKey = 'is_dark_mode';
+  static const String _fontFamilyPrefKey = 'app_font_family';
+  static const String _fontScalePrefKey = 'app_font_scale';
+
+  /// Supported Font Styles available in Profile settings
+  static const List<Map<String, String>> supportedFonts = [
+    {
+      'name': 'Times New Roman',
+      'label': 'Times New Roman (Standard)',
+      'description': 'Standard format serif typography',
+    },
+    {
+      'name': 'Roboto',
+      'label': 'Roboto',
+      'description': 'Clean Material sans-serif',
+    },
+    {
+      'name': 'Arial',
+      'label': 'Arial',
+      'description': 'Universal crisp sans-serif',
+    },
+    {
+      'name': 'Georgia',
+      'label': 'Georgia',
+      'description': 'Warm and elegant serif',
+    },
+    {
+      'name': 'Courier New',
+      'label': 'Courier New',
+      'description': 'Technical monospace format',
+    },
+  ];
+
+  /// Preset Font Sizes for the profile selector
+  static const List<Map<String, dynamic>> supportedFontSizes = [
+    {'label': 'Small', 'scale': 0.85, 'percent': '85%'},
+    {'label': 'Standard', 'scale': 1.0, 'percent': '100% (Default)'},
+    {'label': 'Large', 'scale': 1.15, 'percent': '115%'},
+    {'label': 'Extra Large', 'scale': 1.30, 'percent': '130%'},
+  ];
+
+  /// Initialize theme mode and typography settings from SharedPreferences on app launch
   static Future<void> initializeTheme() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      
       final isDark = prefs.getBool(_themePrefKey) ?? false;
       themeModeNotifier.value = isDark ? ThemeMode.dark : ThemeMode.light;
+
+      final savedFont = prefs.getString(_fontFamilyPrefKey) ?? defaultFontFamily;
+      fontFamilyNotifier.value = savedFont;
+
+      final savedScale = prefs.getDouble(_fontScalePrefKey) ?? defaultFontScale;
+      fontScaleNotifier.value = savedScale;
     } catch (_) {
       themeModeNotifier.value = ThemeMode.light;
+      fontFamilyNotifier.value = defaultFontFamily;
+      fontScaleNotifier.value = defaultFontScale;
     }
   }
 
@@ -32,6 +90,35 @@ class AppTheme {
     } catch (_) {}
   }
 
+  /// Update the application-wide font style and persist to SharedPreferences
+  static Future<void> setFontFamily(String family) async {
+    fontFamilyNotifier.value = family;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_fontFamilyPrefKey, family);
+    } catch (_) {}
+  }
+
+  /// Update the application-wide font scale and persist to SharedPreferences
+  static Future<void> setFontScale(double scale) async {
+    fontScaleNotifier.value = scale;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_fontScalePrefKey, scale);
+    } catch (_) {}
+  }
+
+  /// Reset font style and font size back to the standard Times New Roman defaults
+  static Future<void> resetTypography() async {
+    fontFamilyNotifier.value = defaultFontFamily;
+    fontScaleNotifier.value = defaultFontScale;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_fontFamilyPrefKey, defaultFontFamily);
+      await prefs.setDouble(_fontScalePrefKey, defaultFontScale);
+    } catch (_) {}
+  }
+
   /// Check if the current app state is in dark mode
   static bool isDark(BuildContext context) {
     if (themeModeNotifier.value == ThemeMode.system) {
@@ -41,7 +128,10 @@ class AppTheme {
   }
 
   // ---------------- LIGHT THEME ----------------
-  static ThemeData get lightTheme {
+  static ThemeData get lightTheme => getLightTheme(fontFamilyNotifier.value);
+
+  static ThemeData getLightTheme([String? fontFamily]) {
+    final activeFontFamily = fontFamily ?? fontFamilyNotifier.value;
     final colorScheme = ColorScheme.fromSeed(
       seedColor: _seedColor,
       brightness: Brightness.light,
@@ -50,6 +140,8 @@ class AppTheme {
     );
 
     return ThemeData(
+      fontFamily: activeFontFamily,
+      fontFamilyFallback: const ['Times New Roman', 'serif'],
       colorScheme: colorScheme,
       brightness: Brightness.light,
       scaffoldBackgroundColor: const Color(0xFFFAFAFC),
@@ -120,7 +212,10 @@ class AppTheme {
   }
 
   // ---------------- DARK THEME ----------------
-  static ThemeData get darkTheme {
+  static ThemeData get darkTheme => getDarkTheme(fontFamilyNotifier.value);
+
+  static ThemeData getDarkTheme([String? fontFamily]) {
+    final activeFontFamily = fontFamily ?? fontFamilyNotifier.value;
     final colorScheme = ColorScheme.fromSeed(
       seedColor: _seedColor,
       brightness: Brightness.dark,
@@ -129,6 +224,8 @@ class AppTheme {
     );
 
     return ThemeData(
+      fontFamily: activeFontFamily,
+      fontFamilyFallback: const ['Times New Roman', 'serif'],
       colorScheme: colorScheme,
       brightness: Brightness.dark,
       scaffoldBackgroundColor: const Color(0xFF0F172A), // Slate 900
