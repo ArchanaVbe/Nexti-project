@@ -146,6 +146,7 @@ async def run_plan_async(
     all_places_pool: List[Dict[str, Any]],
     start_point: str,
     end_point: str,
+    hotel: Optional[str] = None,
     travel_mode: str = "DRIVE",
 ) -> Dict[str, Any]:
     """Runs ADK planner agent with get_place_details and compute_route tools
@@ -179,8 +180,9 @@ async def run_plan_async(
         plan_request = {
             "trip_id": trip_id,
             "dates": dates,
-            "start_point": start_point or "Hotel",
-            "end_point": end_point or start_point or "Hotel",
+            "start_point": start_point or "Starting Point",
+            "hotel": hotel or "Hotel Stay",
+            "end_point": end_point or hotel or start_point or "Hotel",
             "travel_mode": travel_mode,
             "selected_places": [
                 {"id": p["place_id"], "name": p["name"]}

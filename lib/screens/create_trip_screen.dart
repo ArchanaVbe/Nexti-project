@@ -5,10 +5,13 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'trip_details_screen.dart';
 import '../trip_qr_screen.dart';
 import '../services/trip_api.dart';
 import '../models/trip_plan_models.dart';
+import '../widgets/hotel_map_picker.dart';
 
 /// Automatically capitalizes the first letter of entered text
 class FirstLetterCapitalizationFormatter extends TextInputFormatter {
@@ -55,7 +58,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   final TextEditingController _groupSizeController = TextEditingController();
   final TextEditingController _tripNameController = TextEditingController();
   final TextEditingController _startPointController = TextEditingController();
-  final TextEditingController _finalStopController = TextEditingController();
+  final TextEditingController _hotelController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
   String _travelMode = 'DRIVE';
@@ -65,6 +68,17 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   String? _selectedCityPlaceId;
   double? _selectedCityLat;
   double? _selectedCityLng;
+
+  Timer? _startPointDebounce;
+  List<CitySuggestion> _startPointSuggestions = [];
+  bool _isSearchingStartPoint = false;
+  bool _isFetchingLocation = false;
+
+  Timer? _hotelDebounce;
+  List<CitySuggestion> _hotelSuggestions = [];
+  bool _isSearchingHotel = false;
+  double? _hotelLat;
+  double? _hotelLng;
 
   DiscoverResponse? _discoverData;
   ItineraryPlan? _itineraryPlan;
@@ -127,6 +141,10 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     }
 
     _listenToTripUpdates();
+
+    if (_startPointController.text.isEmpty) {
+      _detectCurrentLocationSilently();
+    }
   }
 
   void _applyTripData(Map<String, dynamic> data) {
@@ -156,8 +174,14 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     if (data['startPoint'] != null) {
       _startPointController.text = data['startPoint'].toString();
     }
-    if (data['finalStop'] != null) {
-      _finalStopController.text = data['finalStop'].toString();
+    if (data['hotel'] != null) {
+      _hotelController.text = data['hotel'].toString();
+    }
+    if (data['hotelLat'] != null) {
+      _hotelLat = double.tryParse(data['hotelLat'].toString());
+    }
+    if (data['hotelLng'] != null) {
+      _hotelLng = double.tryParse(data['hotelLng'].toString());
     }
     if (data['travelMode'] != null) {
       _travelMode = data['travelMode'].toString();
@@ -191,7 +215,9 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         'endDate': _endDateController.text.trim(),
         'groupSize': _groupSizeController.text.trim(),
         'startPoint': _startPointController.text.trim(),
-        'finalStop': _finalStopController.text.trim(),
+        'hotel': _hotelController.text.trim(),
+        'hotelLat': _hotelLat,
+        'hotelLng': _hotelLng,
         'travelMode': _travelMode,
         'cityPlaceId': _selectedCityPlaceId,
         'itineraryPlan': _itineraryPlan?.toJson(),
@@ -531,15 +557,236 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   void dispose() {
     _tripSubscription?.cancel();
     _cityDebounce?.cancel();
+    _startPointDebounce?.cancel();
+    _hotelDebounce?.cancel();
     _destinationController.dispose();
     _startDateController.dispose();
     _endDateController.dispose();
     _groupSizeController.dispose();
     _tripNameController.dispose();
     _startPointController.dispose();
-    _finalStopController.dispose();
+    _hotelController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  Future<void> _detectCurrentLocationSilently() async {
+    try {
+      final permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.always || permission == LocationPermission.whileInUse) {
+        final position = await Geolocator.getLastKnownPosition() ??
+            await Geolocator.getCurrentPosition(
+              locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium),
+            );
+        final placeName = await TripApi.reverseGeocode(position.latitude, position.longitude);
+
+        if (mounted && _startPointController.text.isEmpty && placeName.isNotEmpty) {
+          setState(() {
+            _startPointController.text = placeName;
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _useCurrentLocation() async {
+    setState(() {
+      _isFetchingLocation = true;
+    });
+
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Please enable GPS / Location services on your phone.'),
+              backgroundColor: Colors.amber,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+        setState(() {
+          _isFetchingLocation = false;
+        });
+        return;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Location permission was denied.'),
+                backgroundColor: Colors.redAccent,
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          }
+          setState(() {
+            _isFetchingLocation = false;
+          });
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Location permission is permanently denied. Please allow it in settings.'),
+              backgroundColor: Colors.redAccent,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+        setState(() {
+          _isFetchingLocation = false;
+        });
+        return;
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      );
+
+      final placeName = await TripApi.reverseGeocode(position.latitude, position.longitude);
+
+      if (mounted) {
+        setState(() {
+          _startPointController.text = placeName;
+          _startPointSuggestions = [];
+          _isFetchingLocation = false;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Starting point set to: $placeName'),
+            backgroundColor: const Color(0xFF6366F1),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error getting current location: $e');
+      if (mounted) {
+        setState(() {
+          _isFetchingLocation = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not determine current location. You can type it manually.'),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  void _onStartPointChanged(String query) {
+    _startPointDebounce?.cancel();
+    final clean = query.trim();
+    if (clean.length < 2) {
+      setState(() {
+        _startPointSuggestions = [];
+        _isSearchingStartPoint = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _isSearchingStartPoint = true;
+    });
+
+    _startPointDebounce = Timer(const Duration(milliseconds: 350), () async {
+      try {
+        final suggestions = await TripApi.autocompleteCity(clean, types: 'geocode');
+        if (mounted) {
+          setState(() {
+            _startPointSuggestions = suggestions;
+            _isSearchingStartPoint = false;
+          });
+        }
+      } catch (_) {
+        if (mounted) {
+          setState(() {
+            _isSearchingStartPoint = false;
+          });
+        }
+      }
+    });
+  }
+
+  void _onHotelChanged(String query) {
+    _hotelDebounce?.cancel();
+    final clean = query.trim();
+    if (clean.length < 2) {
+      setState(() {
+        _hotelSuggestions = [];
+        _isSearchingHotel = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _isSearchingHotel = true;
+    });
+
+    _hotelDebounce = Timer(const Duration(milliseconds: 350), () async {
+      try {
+        final suggestions = await TripApi.autocompleteCity(clean, types: 'lodging');
+        if (mounted) {
+          setState(() {
+            _hotelSuggestions = suggestions;
+            _isSearchingHotel = false;
+          });
+        }
+      } catch (_) {
+        if (mounted) {
+          setState(() {
+            _isSearchingHotel = false;
+          });
+        }
+      }
+    });
+  }
+
+  Future<void> _openHotelMapPicker() async {
+    final destLat = _selectedCityLat ?? 13.9299;
+    final destLng = _selectedCityLng ?? 75.5681;
+    final destName = _destinationController.text.trim().isNotEmpty
+        ? _destinationController.text.trim()
+        : 'Destination';
+
+    final result = await Navigator.push<HotelPickResult>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => HotelMapPickerScreen(
+          initialCenter: LatLng(_hotelLat ?? destLat, _hotelLng ?? destLng),
+          destinationName: destName,
+          initialHotelName: _hotelController.text.trim(),
+        ),
+      ),
+    );
+
+    if (result != null && mounted) {
+      setState(() {
+        _hotelController.text = result.name;
+        _hotelLat = result.lat;
+        _hotelLng = result.lng;
+        _hotelSuggestions = [];
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Hotel selected: ${result.name}'),
+          backgroundColor: const Color(0xFF6366F1),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   void _onCityChanged(String query) {
@@ -593,11 +840,8 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           _selectedCityPlaceId = res.placeId;
           _selectedCityLat = res.lat;
           _selectedCityLng = res.lng;
-          if (_startPointController.text.isEmpty) {
-            _startPointController.text = '$cityName Central Hotel';
-          }
-          if (_finalStopController.text.isEmpty) {
-            _finalStopController.text = '$cityName Central Hotel';
+          if (_hotelController.text.isEmpty) {
+            _hotelController.text = '$cityName Stay';
           }
         });
       }
@@ -711,10 +955,13 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         selectedIds: selectedIds,
         start: _startPointController.text.trim().isNotEmpty
             ? _startPointController.text.trim()
-            : '${_destinationController.text.trim()} Central Hotel',
-        end: _finalStopController.text.trim().isNotEmpty
-            ? _finalStopController.text.trim()
-            : '${_destinationController.text.trim()} Central Hotel',
+            : 'Starting Point',
+        hotel: _hotelController.text.trim().isNotEmpty
+            ? _hotelController.text.trim()
+            : '${_destinationController.text.trim()} Hotel',
+        end: _hotelController.text.trim().isNotEmpty
+            ? _hotelController.text.trim()
+            : _destinationController.text.trim(),
         travelMode: _travelMode,
       );
 
@@ -939,6 +1186,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     List<TextInputFormatter>? inputFormatters,
     TextCapitalization textCapitalization = TextCapitalization.none,
     ValueChanged<String>? onChanged,
+    Widget? suffixIcon,
   }) {
     final bool hasError = errorText != null && errorText.isNotEmpty;
 
@@ -1003,6 +1251,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                   ? const Color(0xFFEF4444)
                   : (isDark ? const Color(0xFF818CF8) : const Color(0xFF64748B)),
             ),
+            suffixIcon: suffixIcon,
             filled: true,
             fillColor: hasError
                 ? (isDark ? const Color(0xFF450A0A).withValues(alpha: 0.3) : const Color(0xFFFEF2F2))
@@ -1397,21 +1646,226 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           onTap: () => _selectEndDate(context),
         ),
         _buildTextField(
-          label: 'Hotel or Starting Point',
-          hint: 'e.g. Royal Orchid Hotel / Basecamp',
-          icon: Icons.hotel_outlined,
+          label: 'Starting Point',
+          hint: 'Your present location (e.g. Bengaluru, Home)',
+          icon: Icons.trip_origin_rounded,
           controller: _startPointController,
           isDark: isDark,
           textCapitalization: TextCapitalization.words,
+          onChanged: _onStartPointChanged,
+          suffixIcon: _isFetchingLocation
+              ? const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF6366F1)),
+                  ),
+                )
+              : IconButton(
+                  icon: const Icon(Icons.my_location_rounded, color: Color(0xFF6366F1)),
+                  tooltip: 'Use Current Location',
+                  onPressed: _useCurrentLocation,
+                ),
         ),
+        Padding(
+          padding: const EdgeInsets.only(top: 0, bottom: 12, left: 4),
+          child: Row(
+            children: [
+              InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: _isFetchingLocation ? null : _useCurrentLocation,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.my_location_rounded, size: 14, color: Color(0xFF6366F1)),
+                      const SizedBox(width: 6),
+                      Text(
+                        _isFetchingLocation ? 'Detecting GPS location...' : 'Use current location',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF6366F1),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (_isSearchingStartPoint) ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12, left: 4),
+            child: Row(
+              children: [
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF6366F1)),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Searching starting point suggestions...',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (_startPointSuggestions.isNotEmpty) ...[
+          Container(
+            margin: const EdgeInsets.only(top: 0, bottom: 16),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.35),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.08),
+                  blurRadius: 8,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              children: _startPointSuggestions.map((sugg) {
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.location_on_rounded, size: 18, color: Color(0xFF6366F1)),
+                  title: Text(
+                    sugg.description,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: isDark ? Colors.white : const Color(0xFF0F172A),
+                    ),
+                  ),
+                  onTap: () {
+                    setState(() {
+                      _startPointController.text = sugg.description;
+                      _startPointSuggestions = [];
+                      _isSearchingStartPoint = false;
+                    });
+                  },
+                );
+              }).toList(),
+            ),
+          ),
+        ],
         _buildTextField(
-          label: 'Final Stop',
-          hint: 'e.g. Return to Hotel / Airport',
-          icon: Icons.flag_outlined,
-          controller: _finalStopController,
+          label: 'Hotel / Stay (Booked or Planning)',
+          hint: 'e.g. Royal Orchid Resort, Homestay, or pick on map',
+          icon: Icons.hotel_outlined,
+          controller: _hotelController,
           isDark: isDark,
           textCapitalization: TextCapitalization.words,
+          onChanged: _onHotelChanged,
+          suffixIcon: IconButton(
+            icon: const Icon(Icons.map_rounded, color: Color(0xFF6366F1)),
+            tooltip: 'Choose on Map',
+            onPressed: _openHotelMapPicker,
+          ),
         ),
+        Padding(
+          padding: const EdgeInsets.only(top: 0, bottom: 14, left: 4),
+          child: Row(
+            children: [
+              OutlinedButton.icon(
+                onPressed: _openHotelMapPicker,
+                icon: const Icon(Icons.pin_drop_rounded, size: 15, color: Color(0xFF6366F1)),
+                label: const Text(
+                  'Choose on Map',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF6366F1)),
+                ),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Color(0xFF6366F1), width: 1.2),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  minimumSize: const Size(0, 32),
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (_isSearchingHotel) ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12, left: 4),
+            child: Row(
+              children: [
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF6366F1)),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Searching hotel suggestions...',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (_hotelSuggestions.isNotEmpty) ...[
+          Container(
+            margin: const EdgeInsets.only(top: 0, bottom: 16),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.35),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.08),
+                  blurRadius: 8,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              children: _hotelSuggestions.map((sugg) {
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.hotel_rounded, size: 18, color: Color(0xFF6366F1)),
+                  title: Text(
+                    sugg.description,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: isDark ? Colors.white : const Color(0xFF0F172A),
+                    ),
+                  ),
+                  onTap: () async {
+                    final cleanName = sugg.description.split(',').first.trim();
+                    setState(() {
+                      _hotelController.text = cleanName;
+                      _hotelSuggestions = [];
+                      _isSearchingHotel = false;
+                    });
+                    try {
+                      final res = await TripApi.resolveCity(sugg.placeId);
+                      _hotelLat = res.lat;
+                      _hotelLng = res.lng;
+                    } catch (_) {}
+                  },
+                );
+              }).toList(),
+            ),
+          ),
+        ],
         _buildTravelModeSelector(isDark),
         _buildTextField(
           label: 'Group Size',
@@ -1872,7 +2326,9 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           ? _groupSizeController.text.trim()
           : '1',
       'startPoint': _startPointController.text.trim(),
-      'finalStop': _finalStopController.text.trim(),
+      'hotel': _hotelController.text.trim(),
+      'hotelLat': _hotelLat,
+      'hotelLng': _hotelLng,
       'travelMode': _travelMode,
       'itineraryPlan': _itineraryPlan?.toJson(),
       'places': allCombinedPlaces,
@@ -2299,7 +2755,9 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       'endDate': _endDateController.text.trim(),
       'groupSize': _groupSizeController.text.trim(),
       'startPoint': _startPointController.text.trim(),
-      'finalStop': _finalStopController.text.trim(),
+      'hotel': _hotelController.text.trim(),
+      'hotelLat': _hotelLat,
+      'hotelLng': _hotelLng,
       'travelMode': _travelMode,
       'itineraryPlan': _itineraryPlan?.toJson(),
       'places': allCombinedPlaces,
@@ -2346,7 +2804,9 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         'endDate': _endDateController.text.trim(),
         'groupSize': _groupSizeController.text.trim(),
         'startPoint': _startPointController.text.trim(),
-        'finalStop': _finalStopController.text.trim(),
+        'hotel': _hotelController.text.trim(),
+        'hotelLat': _hotelLat,
+        'hotelLng': _hotelLng,
         'travelMode': _travelMode,
         'itineraryPlan': _itineraryPlan?.toJson(),
         'places': allCombinedPlaces,

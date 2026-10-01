@@ -47,11 +47,17 @@ GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 class AutocompleteRequest(BaseModel):
     query: Optional[str] = None
     input: Optional[str] = None
+    types: Optional[str] = "cities"
     session_token: Optional[str] = None
 
     @property
     def search_query(self) -> str:
         return self.query or self.input or ""
+
+
+class ReverseGeocodeRequest(BaseModel):
+    lat: float
+    lng: float
 
 
 class ResolveRequest(BaseModel):
@@ -72,8 +78,9 @@ class PlanRequest(BaseModel):
     trip_id: str
     dates: List[str]
     selected_ids: List[str]
-    start: Optional[str] = "Hotel"
-    end: Optional[str] = "Hotel"
+    start: Optional[str] = "Starting Point"
+    hotel: Optional[str] = None
+    end: Optional[str] = None
     travel_mode: Optional[str] = "DRIVE"
     session_token: Optional[str] = None
 
@@ -106,7 +113,7 @@ KNOWN_CITIES: Dict[str, Dict[str, Any]] = {
 # Backend Helpers
 # ----------------------------------------------------------------------
 
-def autocomplete_city(query: str, session_token: Optional[str] = None) -> List[Dict[str, str]]:
+def autocomplete_city(query: str, types: Optional[str] = "cities", session_token: Optional[str] = None) -> List[Dict[str, str]]:
     """Calls Google Places Autocomplete as the user types; returns city suggestions."""
     clean_q = query.strip()
     if not clean_q:
@@ -116,10 +123,20 @@ def autocomplete_city(query: str, session_token: Optional[str] = None) -> List[D
     suggestions: List[Dict[str, str]] = []
 
     if key:
+        type_param = ""
+        if types == "cities":
+            type_param = "&types=(cities)"
+        elif types == "lodging":
+            type_param = "&types=lodging"
+        elif types == "establishment":
+            type_param = "&types=establishment"
+        elif types and types != "all":
+            type_param = f"&types={types}"
+
         url = (
             "https://maps.googleapis.com/maps/api/place/autocomplete/json"
             f"?input={requests.utils.quote(clean_q)}"
-            "&types=(cities)"
+            f"{type_param}"
             f"&key={key}"
         )
         if session_token:
@@ -278,10 +295,42 @@ def health_check():
 def handle_autocomplete(req: AutocompleteRequest):
     """Step 2: Call Google Places Autocomplete as the user types."""
     search_q = req.search_query
-    suggestions = autocomplete_city(search_q, req.session_token)
+    suggestions = autocomplete_city(search_q, types=req.types, session_token=req.session_token)
     return {
         "query": search_q,
         "suggestions": suggestions,
+    }
+
+
+@app.post("/places/reverse-geocode")
+def handle_reverse_geocode(req: ReverseGeocodeRequest):
+    """Converts GPS coordinates into human-readable address/place name."""
+    key = os.getenv("GOOGLE_MAPS_API_KEY", GOOGLE_MAPS_API_KEY)
+    if key:
+        url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={req.lat},{req.lng}&key={key}"
+        try:
+            resp = requests.get(url, timeout=5)
+            data = resp.json()
+            if data.get("status") == "OK" and data.get("results"):
+                res = data["results"][0]
+                formatted = res.get("formatted_address", "")
+                locality = ""
+                for comp in res.get("address_components", []):
+                    types = comp.get("types", [])
+                    if "locality" in types or "sublocality" in types:
+                        locality = comp.get("long_name", "")
+                        break
+                return {
+                    "address": formatted,
+                    "locality": locality or formatted,
+                    "place_id": res.get("place_id", ""),
+                }
+        except Exception:
+            pass
+    return {
+        "address": f"Location ({req.lat:.4f}, {req.lng:.4f})",
+        "locality": f"Coordinates ({req.lat:.3f}, {req.lng:.3f})",
+        "place_id": "",
     }
 
 
@@ -327,7 +376,9 @@ async def handle_plan(req: PlanRequest):
     Backend validates itinerary and returns daily schedules with warnings.
     """
     user_id = req.session_token or "traveler"
-    places_pool = TRIP_PLACES_CACHE.get(req.trip_id, [])
+    start_pt = req.start or "Starting Point"
+    hotel_pt = req.hotel or "Hotel Stay"
+    end_pt = req.end or req.hotel or start_pt
 
     plan_result = await run_plan_async(
         user_id=user_id,
@@ -335,8 +386,9 @@ async def handle_plan(req: PlanRequest):
         dates=req.dates,
         selected_ids=req.selected_ids,
         all_places_pool=places_pool,
-        start_point=req.start or "Hotel",
-        end_point=req.end or req.start or "Hotel",
+        start_point=start_pt,
+        end_point=end_pt,
+        hotel=hotel_pt,
         travel_mode=req.travel_mode or "DRIVE",
     )
 

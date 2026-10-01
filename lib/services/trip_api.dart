@@ -46,10 +46,11 @@ class TripApi {
   }
 
   // --------------------------------------------------------------------
-  // Step 2: Autocomplete City
+  // Step 2: Autocomplete City & Places
   // --------------------------------------------------------------------
   static Future<List<CitySuggestion>> autocompleteCity(
     String query, {
+    String? types = 'cities',
     String? sessionToken,
   }) async {
     final cleanQ = query.trim();
@@ -65,6 +66,7 @@ class TripApi {
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'query': cleanQ,
+              'types': types,
               'session_token': sessionToken,
             }),
           )
@@ -89,6 +91,36 @@ class TripApi {
       CitySuggestion(description: 'Hampi, Karnataka, India', placeId: 'city_hampi'),
       CitySuggestion(description: 'Mysuru, Karnataka, India', placeId: 'city_mysuru'),
     ];
+  }
+
+  /// Reverse geocode coordinates to a clean human-readable address
+  static Future<String> reverseGeocode(double lat, double lng) async {
+    final baseUrl = await getBaseUrl();
+    final url = Uri.parse('$baseUrl/places/reverse-geocode');
+
+    try {
+      final response = await http
+          .post(
+            url,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'lat': lat,
+              'lng': lng,
+            }),
+          )
+          .timeout(const Duration(seconds: 8));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final loc = (data['locality'] ?? data['address'])?.toString();
+        if (loc != null && loc.isNotEmpty) {
+          return loc;
+        }
+      }
+    } catch (e) {
+      debugPrint('Reverse geocode note: $e');
+    }
+    return 'Location (${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)})';
   }
 
   // --------------------------------------------------------------------
@@ -180,8 +212,9 @@ class TripApi {
     required String tripId,
     required List<String> dates,
     required List<String> selectedIds,
-    String start = 'Hotel',
-    String end = 'Hotel',
+    String start = 'Starting Point',
+    String? hotel,
+    String? end,
     String travelMode = 'DRIVE',
     String? sessionToken,
   }) async {
@@ -198,7 +231,8 @@ class TripApi {
               'dates': dates,
               'selected_ids': selectedIds,
               'start': start,
-              'end': end,
+              'hotel': hotel,
+              'end': end ?? hotel ?? start,
               'travel_mode': travelMode,
               'session_token': sessionToken,
             }),
@@ -214,7 +248,8 @@ class TripApi {
     }
 
     // Fallback programmatic schedule if network unavailable
-    return _buildFallbackItineraryPlan(tripId, dates, selectedIds, start, end, travelMode);
+    final resolvedEnd = end ?? hotel ?? start;
+    return _buildFallbackItineraryPlan(tripId, dates, selectedIds, start, resolvedEnd, travelMode);
   }
 
   // --------------------------------------------------------------------

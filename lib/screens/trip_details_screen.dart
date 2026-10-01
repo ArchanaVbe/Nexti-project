@@ -531,7 +531,16 @@ Plan crafted with NexTripia-AI Travel Companion!
         _buildMapSection(),
 
         // 2. Trip Header Banner & Quick Badges
-        _buildTripHeaderBanner(destination, startDate, endDate, groupSize, daysCount, places.length),
+        _buildTripHeaderBanner(
+          destination,
+          startDate,
+          endDate,
+          groupSize,
+          daysCount,
+          places.length,
+          startPoint: widget.trip['startPoint']?.toString(),
+          hotel: widget.trip['hotel']?.toString(),
+        ),
 
         // 3. Trip Progress Counter
         if (places.isNotEmpty) _buildTripProgressSection(places.length),
@@ -817,8 +826,10 @@ Plan crafted with NexTripia-AI Travel Companion!
     String endDate,
     String groupSize,
     int daysCount,
-    int placesCount,
-  ) {
+    int placesCount, {
+    String? startPoint,
+    String? hotel,
+  }) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -940,6 +951,20 @@ Plan crafted with NexTripia-AI Travel Companion!
                 color: const Color(0xFFF97316),
                 bg: isDark ? const Color(0xFF7C2D12).withValues(alpha: 0.4) : const Color(0xFFFFF7ED),
               ),
+              if (startPoint != null && startPoint.trim().isNotEmpty)
+                _buildFeatureBadge(
+                  icon: Icons.trip_origin_rounded,
+                  label: 'From: $startPoint',
+                  color: const Color(0xFF0EA5E9),
+                  bg: isDark ? const Color(0xFF0C4A6E).withValues(alpha: 0.4) : const Color(0xFFF0F9FF),
+                ),
+              if (hotel != null && hotel.trim().isNotEmpty)
+                _buildFeatureBadge(
+                  icon: Icons.hotel_rounded,
+                  label: 'Stay: $hotel',
+                  color: const Color(0xFF8B5CF6),
+                  bg: isDark ? const Color(0xFF4C1D95).withValues(alpha: 0.4) : const Color(0xFFF5F3FF),
+                ),
             ],
           ),
         ],
