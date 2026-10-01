@@ -3,11 +3,12 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'trip_details_screen.dart';
 import '../trip_qr_screen.dart';
+import '../services/trip_api.dart';
+import '../models/trip_plan_models.dart';
 
 /// Automatically capitalizes the first letter of entered text
 class FirstLetterCapitalizationFormatter extends TextInputFormatter {
@@ -52,7 +53,22 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   final TextEditingController _startDateController = TextEditingController();
   final TextEditingController _endDateController = TextEditingController();
   final TextEditingController _groupSizeController = TextEditingController();
+  final TextEditingController _tripNameController = TextEditingController();
+  final TextEditingController _startPointController = TextEditingController();
+  final TextEditingController _finalStopController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+
+  String _travelMode = 'DRIVE';
+  Timer? _cityDebounce;
+  List<CitySuggestion> _citySuggestions = [];
+  bool _isSearchingCity = false;
+  String? _selectedCityPlaceId;
+  double? _selectedCityLat;
+  double? _selectedCityLng;
+
+  DiscoverResponse? _discoverData;
+  ItineraryPlan? _itineraryPlan;
+  bool _isPlanningTrip = false;
 
   DateTime? _startDate;
   DateTime? _endDate;
@@ -121,7 +137,10 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         dest = dest[0].toUpperCase() + dest.substring(1);
       }
       _destinationController.text = dest;
-      _fetchPlacesFromGoogle(_destinationController.text);
+      _fetchPlacesViaBackend(_destinationController.text);
+    }
+    if (data['tripName'] != null) {
+      _tripNameController.text = data['tripName'].toString();
     }
     if (data['startDate'] != null) {
       _startDateController.text = data['startDate'].toString();
@@ -133,6 +152,20 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     }
     if (data['groupSize'] != null) {
       _groupSizeController.text = data['groupSize'].toString();
+    }
+    if (data['startPoint'] != null) {
+      _startPointController.text = data['startPoint'].toString();
+    }
+    if (data['finalStop'] != null) {
+      _finalStopController.text = data['finalStop'].toString();
+    }
+    if (data['travelMode'] != null) {
+      _travelMode = data['travelMode'].toString();
+    }
+    if (data['itineraryPlan'] is Map) {
+      try {
+        _itineraryPlan = ItineraryPlan.fromJson(Map<String, dynamic>.from(data['itineraryPlan']));
+      } catch (_) {}
     }
     if (data['places'] is List) {
       _selectedPlaces.clear();
@@ -150,10 +183,20 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
       final Map<String, dynamic> updateData = {
         'tripCode': _tripCode,
+        'tripName': _tripNameController.text.trim().isNotEmpty
+            ? _tripNameController.text.trim()
+            : '${_destinationController.text.trim()} Trip',
         'destination': _destinationController.text.trim(),
         'startDate': _startDateController.text.trim(),
         'endDate': _endDateController.text.trim(),
         'groupSize': _groupSizeController.text.trim(),
+        'startPoint': _startPointController.text.trim(),
+        'finalStop': _finalStopController.text.trim(),
+        'travelMode': _travelMode,
+        'cityPlaceId': _selectedCityPlaceId,
+        'itineraryPlan': _itineraryPlan?.toJson(),
+        'userEmail': user?.email?.trim().toLowerCase() ?? '',
+        'creatorEmail': user?.email?.trim().toLowerCase() ?? '',
         'updatedAt': FieldValue.serverTimestamp(),
       };
 
@@ -237,7 +280,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                 hostDest.isNotEmpty &&
                 _destinationController.text != hostDest) {
               _destinationController.text = hostDest;
-              _fetchPlacesFromGoogle(hostDest);
+              _fetchPlacesViaBackend(hostDest);
             }
             final hostGroupSize = data['groupSize']?.toString();
             if (hostGroupSize != null &&
@@ -245,6 +288,15 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                 _groupSizeController.text != hostGroupSize) {
               _groupSizeController.text = hostGroupSize;
             }
+          }
+
+          // Real-time sync of AI itinerary plan
+          if (data['itineraryPlan'] != null && _itineraryPlan == null) {
+            try {
+              _itineraryPlan = ItineraryPlan.fromJson(
+                Map<String, dynamic>.from(data['itineraryPlan']),
+              );
+            } catch (_) {}
           }
         });
       }
@@ -478,71 +530,208 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   @override
   void dispose() {
     _tripSubscription?.cancel();
+    _cityDebounce?.cancel();
     _destinationController.dispose();
     _startDateController.dispose();
     _endDateController.dispose();
     _groupSizeController.dispose();
+    _tripNameController.dispose();
+    _startPointController.dispose();
+    _finalStopController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
 
-  Future<void> _fetchPlacesFromGoogle(String destination) async {
+  void _onCityChanged(String query) {
+    _cityDebounce?.cancel();
+    final clean = query.trim();
+    if (clean.length < 2) {
+      setState(() {
+        _citySuggestions = [];
+        _isSearchingCity = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _isSearchingCity = true;
+    });
+
+    _cityDebounce = Timer(const Duration(milliseconds: 350), () async {
+      try {
+        final suggestions = await TripApi.autocompleteCity(clean);
+        if (mounted) {
+          setState(() {
+            _citySuggestions = suggestions;
+            _isSearchingCity = false;
+          });
+        }
+      } catch (_) {
+        if (mounted) {
+          setState(() {
+            _isSearchingCity = false;
+          });
+        }
+      }
+    });
+  }
+
+  Future<void> _selectCitySuggestion(CitySuggestion suggestion) async {
+    _cityDebounce?.cancel();
+    final cityName = suggestion.description.split(',').first.trim();
+    _destinationController.text = cityName;
+    setState(() {
+      _citySuggestions = [];
+      _isSearchingCity = false;
+      _destinationError = null;
+    });
+
+    try {
+      final res = await TripApi.resolveCity(suggestion.placeId);
+      if (mounted) {
+        setState(() {
+          _selectedCityPlaceId = res.placeId;
+          _selectedCityLat = res.lat;
+          _selectedCityLng = res.lng;
+          if (_startPointController.text.isEmpty) {
+            _startPointController.text = '$cityName Central Hotel';
+          }
+          if (_finalStopController.text.isEmpty) {
+            _finalStopController.text = '$cityName Central Hotel';
+          }
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _fetchPlacesViaBackend(String destination) async {
+    if (destination.isEmpty) return;
     if (destination == _lastFetchedDestination && _suggestedPlaces.isNotEmpty) return;
-    
+
     setState(() {
       _isLoadingPlaces = true;
       _suggestedPlaces = {};
     });
 
-    const apiKey = 'AIzaSyAE54ZyUoFHQ5JnJvaQBo15RjmxCS5v_ko';
-    
-    final categories = {
-      'Adventure': 'adventure activities in $destination',
-      'Nature': 'nature spots and parks in $destination',
-      'Heritage': 'heritage sites and historical places in $destination',
-      'Shopping': 'shopping markets and malls in $destination'
-    };
+    try {
+      final response = await TripApi.discoverPlaces(
+        tripId: _tripCode,
+        city: destination,
+        lat: _selectedCityLat,
+        lng: _selectedCityLng,
+        radiusKm: 70.0,
+      );
 
-    Map<String, List<String>> fetchedPlaces = {};
+      final Map<String, List<String>> mapped = {};
+      final placeCards = response.places;
+      final placeMap = {for (var p in placeCards) p.placeId: p.name};
 
-    for (var entry in categories.entries) {
-      final categoryName = entry.key;
-      final query = Uri.encodeComponent(entry.value);
-      final url = 'https://maps.googleapis.com/maps/api/place/textsearch/json?query=$query&key=$apiKey';
-      
-      try {
-        final response = await http.get(Uri.parse(url));
-        if (response.statusCode == 200) {
-          final data = jsonDecode(response.body);
-          final results = data['results'] as List;
-          
-          List<String> places = [];
-          for (var i = 0; i < results.length && i < 6; i++) { // Get top 6 places for each category
-            places.add(results[i]['name'] as String);
-          }
-          fetchedPlaces[categoryName] = places;
+      for (var entry in response.categories.entries) {
+        final catName = entry.key;
+        final pNames = entry.value
+            .map((pid) => placeMap[pid] ?? pid.replaceFirst('local_', '').replaceAll('_', ' ').toUpperCase())
+            .toList();
+        if (pNames.isNotEmpty) {
+          mapped[catName] = pNames;
         }
-      } catch (e) {
-        debugPrint('Error fetching $categoryName places: $e');
+      }
+
+      if (mounted) {
+        setState(() {
+          _discoverData = response;
+          _suggestedPlaces = mapped.isNotEmpty
+              ? mapped
+              : {
+                  'Adventure': ['Mountain Peak Trek', 'River Rafting Rapids'],
+                  'Food': ['Traditional Sweets & Thali', 'Authentic Heritage Cuisine'],
+                  'Nature': ['Cascade Forest Waterfall', 'Wildlife Sanctuary Trail'],
+                  'Culture': ['Ancient Heritage Temple', 'Royal Fortification & Palace'],
+                  'Sightseeing': ['Panoramic Sunset Lookout', 'City Central Square'],
+                };
+          _lastFetchedDestination = destination;
+          _isLoadingPlaces = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error discovering places via backend: $e');
+      if (mounted) {
+        setState(() {
+          _isLoadingPlaces = false;
+          _suggestedPlaces = {
+            'Adventure': ['Mountain Peak Trek', 'River Rafting'],
+            'Food': ['Local Cuisine & Sweets', 'Heritage Dining'],
+            'Nature': ['Botanical Gardens', 'Lake Nature Trail'],
+            'Culture': ['Historic Fort', 'Ancient Temple'],
+            'Sightseeing': ['Sunset Viewpoint', 'City Center'],
+          };
+        });
       }
     }
+  }
 
-    if (mounted) {
-      setState(() {
-        // Fallback if API fails or returns no results
-        if (fetchedPlaces.isEmpty || fetchedPlaces.values.every((list) => list.isEmpty)) {
-          _suggestedPlaces = {
-            'Adventure': ['Mountain Trek', 'River Rafting', 'Rock Climbing'],
-            'Nature': ['Botanical Garden', 'Sunset Point', 'Lake View'],
-            'Heritage': ['Historic Fort', 'Ancient Temple', 'Old City Walk'],
-            'Shopping': ['Local Market', 'Handicraft Street']
-          };
-        } else {
-          _suggestedPlaces = fetchedPlaces;
+  Future<void> _generateItineraryViaBackend() async {
+    final allCombinedPlaces = <String>{..._groupPlaces, ..._selectedPlaces}.toList();
+    if (allCombinedPlaces.isEmpty) {
+      allCombinedPlaces.addAll(['Mountain Peak Trek', 'Ancient Temple', 'Sunset Viewpoint']);
+    }
+
+    List<String> datesList = [];
+    if (_startDate != null && _endDate != null) {
+      DateTime cur = _startDate!;
+      while (!cur.isAfter(_endDate!)) {
+        datesList.add('${cur.year}-${cur.month.toString().padLeft(2, '0')}-${cur.day.toString().padLeft(2, '0')}');
+        cur = cur.add(const Duration(days: 1));
+      }
+    }
+    if (datesList.isEmpty) {
+      datesList = ['Day 1', 'Day 2'];
+    }
+
+    setState(() {
+      _isPlanningTrip = true;
+    });
+
+    // Map place names to IDs if available
+    List<String> selectedIds = [];
+    if (_discoverData != null) {
+      for (var p in _discoverData!.places) {
+        if (allCombinedPlaces.contains(p.name)) {
+          selectedIds.add(p.placeId);
         }
-        _lastFetchedDestination = destination;
-        _isLoadingPlaces = false;
-      });
+      }
+    }
+    if (selectedIds.isEmpty) {
+      selectedIds = allCombinedPlaces;
+    }
+
+    try {
+      final plan = await TripApi.planTrip(
+        tripId: _tripCode,
+        dates: datesList,
+        selectedIds: selectedIds,
+        start: _startPointController.text.trim().isNotEmpty
+            ? _startPointController.text.trim()
+            : '${_destinationController.text.trim()} Central Hotel',
+        end: _finalStopController.text.trim().isNotEmpty
+            ? _finalStopController.text.trim()
+            : '${_destinationController.text.trim()} Central Hotel',
+        travelMode: _travelMode,
+      );
+
+      if (mounted) {
+        setState(() {
+          _itineraryPlan = plan;
+          _isPlanningTrip = false;
+        });
+        _syncTripToFirestore();
+      }
+    } catch (e) {
+      debugPrint('Error generating itinerary: $e');
+      if (mounted) {
+        setState(() {
+          _isPlanningTrip = false;
+        });
+      }
     }
   }
 
@@ -670,7 +859,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     }
 
     if (_currentStep == 1) {
-      _fetchPlacesFromGoogle(_destinationController.text.trim());
+      _fetchPlacesViaBackend(_destinationController.text.trim());
       await _syncTripToFirestore();
     } else if ((_isHost && _currentStep == 3) || (!_isHost && _currentStep == 2)) {
       await _syncPreferencesToFirestore();
@@ -968,6 +1157,82 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     }
   }
 
+  Widget _buildTravelModeSelector(bool isDark) {
+    final modes = [
+      {'key': 'DRIVE', 'label': 'Drive', 'icon': Icons.directions_car_rounded},
+      {'key': 'TRANSIT', 'label': 'Transit', 'icon': Icons.directions_bus_rounded},
+      {'key': 'WALK', 'label': 'Walk', 'icon': Icons.directions_walk_rounded},
+      {'key': 'BIKE', 'label': 'Bike', 'icon': Icons.pedal_bike_rounded},
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Travel Mode',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+            color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: modes.map((m) {
+            final isSelected = _travelMode == m['key'];
+            return Expanded(
+              child: GestureDetector(
+                onTap: () {
+                  setState(() {
+                    _travelMode = m['key'] as String;
+                  });
+                },
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? const Color(0xFF6366F1)
+                        : (isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9)),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: isSelected
+                          ? const Color(0xFF6366F1)
+                          : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                    ),
+                  ),
+                  child: Column(
+                    children: [
+                      Icon(
+                        m['icon'] as IconData,
+                        color: isSelected
+                            ? Colors.white
+                            : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B)),
+                        size: 20,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        m['label'] as String,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                          color: isSelected
+                              ? Colors.white
+                              : (isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 20),
+      ],
+    );
+  }
+
   Widget _buildStep1(bool isDark) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1011,8 +1276,16 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         ),
         const SizedBox(height: 24),
         _buildTextField(
-          label: 'Destination',
-          hint: 'e.g. Mysuru, Hampi, Gokarna...',
+          label: 'Trip Name (Optional)',
+          hint: 'e.g. Karnataka Gateway Tour',
+          icon: Icons.bookmark_border_rounded,
+          controller: _tripNameController,
+          isDark: isDark,
+          textCapitalization: TextCapitalization.words,
+        ),
+        _buildTextField(
+          label: 'Destination City',
+          hint: 'Type city (e.g. Shimoga, Coorg, Hampi...)',
           icon: Icons.location_on_outlined,
           controller: _destinationController,
           readOnly: !_isHost,
@@ -1025,6 +1298,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             FirstLetterCapitalizationFormatter(),
           ],
           onChanged: (val) {
+            _onCityChanged(val);
             if (_destinationError != null || _stepWarningMessage != null) {
               setState(() {
                 _destinationError = null;
@@ -1044,6 +1318,64 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             }
           },
         ),
+        if (_isSearchingCity) ...[
+          Padding(
+            padding: const EdgeInsets.only(top: 0, bottom: 12, left: 4),
+            child: Row(
+              children: [
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF6366F1)),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Searching city suggestions...',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (_citySuggestions.isNotEmpty) ...[
+          Container(
+            margin: const EdgeInsets.only(top: 0, bottom: 16),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.35),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.08),
+                  blurRadius: 8,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              children: _citySuggestions.map((sugg) {
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.location_city_rounded, size: 18, color: Color(0xFF6366F1)),
+                  title: Text(
+                    sugg.description,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: isDark ? Colors.white : const Color(0xFF0F172A),
+                    ),
+                  ),
+                  onTap: () => _selectCitySuggestion(sugg),
+                );
+              }).toList(),
+            ),
+          ),
+        ],
         _buildTextField(
           label: 'Start Date',
           hint: 'Select start date',
@@ -1064,6 +1396,23 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           errorText: _endDateError,
           onTap: () => _selectEndDate(context),
         ),
+        _buildTextField(
+          label: 'Hotel or Starting Point',
+          hint: 'e.g. Royal Orchid Hotel / Basecamp',
+          icon: Icons.hotel_outlined,
+          controller: _startPointController,
+          isDark: isDark,
+          textCapitalization: TextCapitalization.words,
+        ),
+        _buildTextField(
+          label: 'Final Stop',
+          hint: 'e.g. Return to Hotel / Airport',
+          icon: Icons.flag_outlined,
+          controller: _finalStopController,
+          isDark: isDark,
+          textCapitalization: TextCapitalization.words,
+        ),
+        _buildTravelModeSelector(isDark),
         _buildTextField(
           label: 'Group Size',
           hint: 'Number of people',
@@ -1093,13 +1442,61 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             }
           },
         ),
-        const SizedBox(height: 40),
+        const SizedBox(height: 30),
       ],
     );
   }
 
+  IconData _getCategoryIconByName(String cat) {
+    switch (cat.toLowerCase()) {
+      case 'adventure':
+        return Icons.hiking_rounded;
+      case 'food':
+        return Icons.restaurant_rounded;
+      case 'nature':
+        return Icons.forest_rounded;
+      case 'culture':
+        return Icons.museum_rounded;
+      case 'sightseeing':
+        return Icons.photo_camera_rounded;
+      default:
+        return Icons.place_rounded;
+    }
+  }
+
+  Color _getCategoryColorByName(String cat) {
+    switch (cat.toLowerCase()) {
+      case 'adventure':
+        return const Color(0xFFF59E0B);
+      case 'food':
+        return const Color(0xFFF43F5E);
+      case 'nature':
+        return const Color(0xFF10B981);
+      case 'culture':
+        return const Color(0xFF8B5CF6);
+      case 'sightseeing':
+        return const Color(0xFF0EA5E9);
+      default:
+        return const Color(0xFF6366F1);
+    }
+  }
+
+  PlaceCard? _findPlaceCard(String placeName) {
+    if (_discoverData == null) return null;
+    final clean = placeName.toLowerCase().trim();
+    for (var p in _discoverData!.places) {
+      final pName = p.name.toLowerCase().trim();
+      if (pName == clean || p.placeId == clean || clean.contains(pName) || pName.contains(clean)) {
+        return p;
+      }
+    }
+    return null;
+  }
+
   Widget _buildStep2(bool isDark) {
     final suggestedPlaces = _suggestedPlaces;
+    final totalSelected = _selectedPlaces.length;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1133,17 +1530,39 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           ),
           const SizedBox(height: 16),
         ],
-        Text(
-          'Preferences in ${_destinationController.text.isNotEmpty ? _destinationController.text : "your destination"}',
-          style: TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.w800,
-            color: isDark ? Colors.white : const Color(0xFF0F172A),
-          ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Text(
+                'Places in ${_destinationController.text.isNotEmpty ? _destinationController.text : "your destination"}',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  color: isDark ? Colors.white : const Color(0xFF0F172A),
+                ),
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                '$totalSelected Selected',
+                style: const TextStyle(
+                  color: Color(0xFF6366F1),
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 8),
         Text(
-          'Select the places you wish to visit (everyone\'s choices will be merged)',
+          'Places categorized across 5 experiences within 70 km. Select your preferred stops.',
           style: TextStyle(
             fontSize: 14,
             color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
@@ -1159,7 +1578,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                   const CircularProgressIndicator(color: Color(0xFF6366F1)),
                   const SizedBox(height: 16),
                   Text(
-                    'Discovering real places from Google Maps...',
+                    'Discovering & categorizing places within 70 km...',
                     style: TextStyle(
                       color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
                     ),
@@ -1170,71 +1589,217 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           )
         else
           ...suggestedPlaces.entries.map((category) {
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  category.key,
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: category.value.map((place) {
-                    final isSelectedByMe = _selectedPlaces.contains(place);
-                    final isSelectedByGroup = _groupPlaces.contains(place);
+            final catName = category.key;
+            final catColor = _getCategoryColorByName(catName);
+            final catIcon = _getCategoryIconByName(catName);
+            final places = category.value;
+            final selectedInCat = places.where((p) => _selectedPlaces.contains(p)).length;
 
-                    return FilterChip(
-                      label: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(place),
-                          if (isSelectedByGroup && !isSelectedByMe) ...[
-                            const SizedBox(width: 4),
-                            const Text('👥', style: TextStyle(fontSize: 11)),
-                          ],
-                        ],
-                      ),
-                      selected: isSelectedByMe,
-                      onSelected: (selected) {
-                        setState(() {
-                          if (selected) {
-                            _selectedPlaces.add(place);
-                          } else {
-                            _selectedPlaces.remove(place);
-                          }
-                        });
-                        _syncPreferencesToFirestore();
-                      },
-                      backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-                      selectedColor: const Color(0xFF6366F1).withValues(alpha: isDark ? 0.35 : 0.1),
-                      checkmarkColor: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF6366F1),
-                      labelStyle: TextStyle(
-                        color: isSelectedByMe
-                            ? (isDark ? const Color(0xFFA5B4FC) : const Color(0xFF6366F1))
-                            : (isDark ? const Color(0xFFCBD5E1) : const Color(0xFF64748B)),
-                        fontWeight: isSelectedByMe ? FontWeight.bold : FontWeight.normal,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20),
-                        side: BorderSide(
-                          color: isSelectedByMe
-                              ? const Color(0xFF6366F1)
-                              : (isSelectedByGroup
-                                  ? const Color(0xFF818CF8).withValues(alpha: 0.7)
-                                  : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0))),
-                        ),
-                      ),
-                    );
-                  }).toList(),
+            return Container(
+              margin: const EdgeInsets.only(bottom: 20),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF1E293B) : Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: selectedInCat > 0
+                      ? catColor.withValues(alpha: 0.6)
+                      : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                  width: selectedInCat > 0 ? 1.5 : 1,
                 ),
-                const SizedBox(height: 24),
-              ],
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.03),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Category Header
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: catColor.withValues(alpha: isDark ? 0.15 : 0.08),
+                      borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: catColor.withValues(alpha: 0.2),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(catIcon, size: 18, color: catColor),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            catName,
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: isDark ? Colors.white : const Color(0xFF0F172A),
+                            ),
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: isDark ? const Color(0xFF0F172A) : Colors.white,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: catColor.withValues(alpha: 0.3)),
+                          ),
+                          child: Text(
+                            '$selectedInCat/${places.length} picked',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: catColor,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Places List inside Category
+                  Padding(
+                    padding: const EdgeInsets.all(12.0),
+                    child: Column(
+                      children: places.map((place) {
+                        final isSelectedByMe = _selectedPlaces.contains(place);
+                        final isSelectedByGroup = _groupPlaces.contains(place);
+                        final card = _findPlaceCard(place);
+
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          decoration: BoxDecoration(
+                            color: isSelectedByMe
+                                ? catColor.withValues(alpha: isDark ? 0.2 : 0.06)
+                                : (isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC)),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: isSelectedByMe
+                                  ? catColor
+                                  : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                            ),
+                          ),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: () {
+                              setState(() {
+                                if (isSelectedByMe) {
+                                  _selectedPlaces.remove(place);
+                                } else {
+                                  _selectedPlaces.add(place);
+                                }
+                              });
+                              _syncPreferencesToFirestore();
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              child: Row(
+                                children: [
+                                  // Checkbox Indicator
+                                  Icon(
+                                    isSelectedByMe
+                                        ? Icons.check_circle_rounded
+                                        : Icons.radio_button_unchecked_rounded,
+                                    color: isSelectedByMe
+                                        ? catColor
+                                        : (isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8)),
+                                    size: 20,
+                                  ),
+                                  const SizedBox(width: 10),
+
+                                  // Place Info
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                place,
+                                                style: TextStyle(
+                                                  fontSize: 14,
+                                                  fontWeight: isSelectedByMe
+                                                      ? FontWeight.bold
+                                                      : FontWeight.w600,
+                                                  color: isDark ? Colors.white : const Color(0xFF0F172A),
+                                                ),
+                                              ),
+                                            ),
+                                            if (isSelectedByGroup && !isSelectedByMe)
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                decoration: BoxDecoration(
+                                                  color: const Color(0xFF6366F1).withValues(alpha: 0.15),
+                                                  borderRadius: BorderRadius.circular(8),
+                                                ),
+                                                child: const Text(
+                                                  '👥 Group Pick',
+                                                  style: TextStyle(
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: Color(0xFF6366F1),
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                        if (card != null) ...[
+                                          const SizedBox(height: 4),
+                                          Row(
+                                            children: [
+                                              if (card.rating > 0) ...[
+                                                const Icon(Icons.star_rounded, size: 14, color: Colors.amber),
+                                                const SizedBox(width: 2),
+                                                Text(
+                                                  card.rating.toStringAsFixed(1),
+                                                  style: const TextStyle(
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: Colors.amber,
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 8),
+                                              ],
+                                              if (card.distanceKm > 0) ...[
+                                                Icon(
+                                                  Icons.near_me_outlined,
+                                                  size: 13,
+                                                  color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                                ),
+                                                const SizedBox(width: 2),
+                                                Text(
+                                                  '${card.distanceKm.toStringAsFixed(1)} km away',
+                                                  style: TextStyle(
+                                                    fontSize: 11,
+                                                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                ],
+              ),
             );
           }),
         const SizedBox(height: 16),
@@ -1243,15 +1808,61 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   }
 
   Widget _buildStep3(bool isDark) {
+    if (_isPlanningTrip) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 60.0, horizontal: 24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(22),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6366F1).withValues(alpha: 0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: const CircularProgressIndicator(
+                  strokeWidth: 3.5,
+                  color: Color(0xFF6366F1),
+                ),
+              ),
+              const SizedBox(height: 24),
+              Text(
+                'AI Agent Planning Your Itinerary...',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: isDark ? Colors.white : const Color(0xFF0F172A),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Calling get_place_details & compute_route tools to verify opening hours, optimize travel legs, and balance meals & visits.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                  height: 1.4,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     // Combine choices from everyone in the group and local selections into a unified set
     final allCombinedPlaces = <String>{..._groupPlaces, ..._selectedPlaces}.toList();
     if (allCombinedPlaces.isEmpty) {
-      allCombinedPlaces.addAll(['Mountain Trek', 'Sunset Point', 'Historic Fort']);
+      allCombinedPlaces.addAll(['Mountain Peak Trek', 'Ancient Temple', 'Sunset Viewpoint']);
     }
 
     final previewTrip = {
       'id': _tripCode,
       'tripCode': _tripCode,
+      'tripName': _tripNameController.text.trim().isNotEmpty
+          ? _tripNameController.text.trim()
+          : '${_destinationController.text.trim()} Trip',
       'destination': _destinationController.text.trim().isNotEmpty
           ? _destinationController.text.trim()
           : 'Trip Destination',
@@ -1260,6 +1871,10 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       'groupSize': _groupSizeController.text.trim().isNotEmpty
           ? _groupSizeController.text.trim()
           : '1',
+      'startPoint': _startPointController.text.trim(),
+      'finalStop': _finalStopController.text.trim(),
+      'travelMode': _travelMode,
+      'itineraryPlan': _itineraryPlan?.toJson(),
       'places': allCombinedPlaces,
       'memberCount': _approvedMemberCount,
     };
@@ -1307,6 +1922,53 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             ),
           ),
         ],
+
+        // Schedule Validation Warnings banner (Step 8 of PDF)
+        if (_itineraryPlan != null && _itineraryPlan!.warnings.isNotEmpty) ...[
+          Container(
+            margin: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF59E0B).withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.warning_amber_rounded, color: Color(0xFFF59E0B), size: 22),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Schedule Validation Notice',
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFFD97706),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      ..._itineraryPlan!.warnings.map((w) => Padding(
+                        padding: const EdgeInsets.only(bottom: 2),
+                        child: Text(
+                          '• $w',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: isDark ? const Color(0xFFFDE68A) : const Color(0xFF92400E),
+                          ),
+                        ),
+                      )),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+
         TripDetailsScreen(
           trip: previewTrip,
           isEmbedded: true,
@@ -1629,10 +2291,17 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     final tripData = {
       'id': DateTime.now().millisecondsSinceEpoch.toString(),
       'tripCode': _tripCode,
+      'tripName': _tripNameController.text.trim().isNotEmpty
+          ? _tripNameController.text.trim()
+          : '${_destinationController.text.trim()} Trip',
       'destination': _destinationController.text.trim(),
       'startDate': _startDateController.text.trim(),
       'endDate': _endDateController.text.trim(),
       'groupSize': _groupSizeController.text.trim(),
+      'startPoint': _startPointController.text.trim(),
+      'finalStop': _finalStopController.text.trim(),
+      'travelMode': _travelMode,
+      'itineraryPlan': _itineraryPlan?.toJson(),
       'places': allCombinedPlaces,
       'isHost': _isHost,
       'userEmail': userEmail,
@@ -1669,6 +2338,17 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     
     try {
       await FirebaseFirestore.instance.collection('trips').doc(_tripCode).set({
+        'tripName': _tripNameController.text.trim().isNotEmpty
+            ? _tripNameController.text.trim()
+            : '${_destinationController.text.trim()} Trip',
+        'destination': _destinationController.text.trim(),
+        'startDate': _startDateController.text.trim(),
+        'endDate': _endDateController.text.trim(),
+        'groupSize': _groupSizeController.text.trim(),
+        'startPoint': _startPointController.text.trim(),
+        'finalStop': _finalStopController.text.trim(),
+        'travelMode': _travelMode,
+        'itineraryPlan': _itineraryPlan?.toJson(),
         'places': allCombinedPlaces,
         'status': 'completed',
         'userEmail': userEmail,
@@ -1829,10 +2509,12 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                           return;
                         }
 
-                        _fetchPlacesFromGoogle(_destinationController.text.trim());
+                        _fetchPlacesViaBackend(_destinationController.text.trim());
                         await _syncTripToFirestore();
                       } else if ((_isHost && _currentStep == 3) || (!_isHost && _currentStep == 2)) {
                         await _syncPreferencesToFirestore();
+                        // Step 7: Generate AI Daily Itinerary with Routes and Opening hours
+                        _generateItineraryViaBackend();
                       }
                       setState(() {
                         _stepWarningMessage = null;

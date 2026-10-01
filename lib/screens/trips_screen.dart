@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'trip_details_screen.dart';
 
@@ -67,6 +68,42 @@ class _TripsScreenState extends State<TripsScreen> {
           })
           .toList();
     });
+
+    // Cloud Firestore Sync: Fetch user trips and merge
+    if (userEmail.isNotEmpty) {
+      try {
+        final querySnapshot = await FirebaseFirestore.instance
+            .collection('trips')
+            .where('userEmail', isEqualTo: userEmail)
+            .get();
+
+        bool hadUpdates = false;
+        for (final doc in querySnapshot.docs) {
+          final data = doc.data();
+          final tripCode = (data['tripCode'] ?? doc.id).toString();
+          final index = _savedTrips.indexWhere((t) => t['tripCode']?.toString() == tripCode);
+
+          if (index == -1) {
+            final Map<String, dynamic> newTrip = Map<String, dynamic>.from(data);
+            newTrip['tripCode'] = tripCode;
+            newTrip['id'] = doc.id;
+            _savedTrips.add(newTrip);
+            hadUpdates = true;
+          } else if (data['itineraryPlan'] != null && _savedTrips[index]['itineraryPlan'] == null) {
+            _savedTrips[index]['itineraryPlan'] = data['itineraryPlan'];
+            hadUpdates = true;
+          }
+        }
+
+        if (hadUpdates && mounted) {
+          setState(() {});
+          final encoded = _savedTrips.map((e) => jsonEncode(e)).toList();
+          await prefs.setStringList(key, encoded);
+        }
+      } catch (e) {
+        debugPrint('Firestore trip sync notice: $e');
+      }
+    }
   }
 
   Future<void> _deleteTrip(int index) async {
@@ -78,6 +115,8 @@ class _TripsScreenState extends State<TripsScreen> {
     List<String> savedTripsStr = prefs.getStringList(key) ?? [];
     if (index >= 0 && index < _savedTrips.length) {
       final tripToDelete = _savedTrips[index];
+      final tripCode = tripToDelete['tripCode']?.toString();
+
       savedTripsStr.removeWhere((item) {
         try {
           final decoded = jsonDecode(item);
@@ -91,6 +130,14 @@ class _TripsScreenState extends State<TripsScreen> {
       setState(() {
         _savedTrips.removeAt(index);
       });
+
+      // Remove from Cloud Firestore if present
+      if (tripCode != null && tripCode.isNotEmpty) {
+        try {
+          await FirebaseFirestore.instance.collection('trips').doc(tripCode).delete();
+        } catch (_) {}
+      }
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Trip deleted successfully')),

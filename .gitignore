@@ -43,3 +43,17 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Environment variables & secrets
+.env
+*.env
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# Python virtual environment & cache
+backend/venv/
+backend/env/
+venv/
+__pycache__/
+*.pyc

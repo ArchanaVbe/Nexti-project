@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'dart:math' as math;
+import '../models/trip_plan_models.dart';
 
 class TripDetailsScreen extends StatefulWidget {
   final Map<String, dynamic> trip;
@@ -284,32 +285,64 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
     _mapController!.animateCamera(CameraUpdate.newLatLngBounds(bounds, 50));
   }
 
-  IconData _getCategoryIcon(String place) {
+  IconData _getCategoryIcon(String place, [String? stopType]) {
+    final sType = stopType?.toUpperCase() ?? '';
+    if (sType == 'MEAL') return Icons.restaurant_rounded;
+    if (sType == 'TRANSIT') return Icons.directions_car_rounded;
+    if (sType == 'BREAK') return Icons.coffee_rounded;
+    if (sType == 'START' || sType == 'END') return Icons.hotel_rounded;
+
     final lower = place.toLowerCase();
-    if (lower.contains('trek') || lower.contains('mountain') || lower.contains('climb') || lower.contains('rafting')) {
+    if (lower.contains('trek') || lower.contains('mountain') || lower.contains('climb') || lower.contains('rafting') || lower.contains('adventure')) {
       return Icons.terrain_rounded;
-    } else if (lower.contains('sunset') || lower.contains('lake') || lower.contains('garden') || lower.contains('falls')) {
+    } else if (lower.contains('sunset') || lower.contains('lake') || lower.contains('garden') || lower.contains('falls') || lower.contains('nature') || lower.contains('forest') || lower.contains('park')) {
       return Icons.wb_twilight_rounded;
-    } else if (lower.contains('fort') || lower.contains('temple') || lower.contains('ancient') || lower.contains('palace')) {
+    } else if (lower.contains('fort') || lower.contains('temple') || lower.contains('ancient') || lower.contains('palace') || lower.contains('culture') || lower.contains('museum')) {
       return Icons.castle_rounded;
-    } else if (lower.contains('market') || lower.contains('street') || lower.contains('shop')) {
-      return Icons.shopping_bag_rounded;
+    } else if (lower.contains('market') || lower.contains('street') || lower.contains('shop') || lower.contains('food') || lower.contains('dining') || lower.contains('cuisine')) {
+      return Icons.restaurant_rounded;
+    } else if (lower.contains('sightseeing') || lower.contains('view') || lower.contains('square')) {
+      return Icons.photo_camera_rounded;
     }
     return Icons.place_rounded;
   }
 
-  Color _getCategoryColor(String place) {
+  Color _getCategoryColor(String place, [String? stopType]) {
+    final sType = stopType?.toUpperCase() ?? '';
+    if (sType == 'MEAL') return const Color(0xFFF43F5E);
+    if (sType == 'TRANSIT') return const Color(0xFF3B82F6);
+    if (sType == 'BREAK') return const Color(0xFF10B981);
+    if (sType == 'START' || sType == 'END') return const Color(0xFF6366F1);
+
     final lower = place.toLowerCase();
-    if (lower.contains('trek') || lower.contains('mountain') || lower.contains('climb') || lower.contains('rafting')) {
+    if (lower.contains('trek') || lower.contains('mountain') || lower.contains('climb') || lower.contains('rafting') || lower.contains('adventure')) {
       return const Color(0xFFEA580C); // Warm Orange for Adventure
-    } else if (lower.contains('sunset') || lower.contains('lake') || lower.contains('garden') || lower.contains('falls')) {
+    } else if (lower.contains('sunset') || lower.contains('lake') || lower.contains('garden') || lower.contains('falls') || lower.contains('nature') || lower.contains('forest')) {
       return const Color(0xFF0D9488); // Teal for Nature
-    } else if (lower.contains('fort') || lower.contains('temple') || lower.contains('ancient') || lower.contains('palace')) {
+    } else if (lower.contains('fort') || lower.contains('temple') || lower.contains('ancient') || lower.contains('palace') || lower.contains('culture') || lower.contains('museum')) {
       return const Color(0xFF7C3AED); // Purple for Heritage
-    } else if (lower.contains('market') || lower.contains('street') || lower.contains('shop')) {
-      return const Color(0xFFE11D48); // Rose for Shopping
+    } else if (lower.contains('market') || lower.contains('street') || lower.contains('shop') || lower.contains('food')) {
+      return const Color(0xFFE11D48); // Rose for Food/Shopping
+    } else if (lower.contains('sightseeing') || lower.contains('view')) {
+      return const Color(0xFF0284C7); // Sky for Sightseeing
     }
     return const Color(0xFF6366F1);
+  }
+
+  List<String> _getItineraryWarnings() {
+    final planData = widget.trip['itineraryPlan'];
+    if (planData != null) {
+      try {
+        final Map<String, dynamic> planMap = planData is Map<String, dynamic>
+            ? planData
+            : (planData is ItineraryPlan ? planData.toJson() : Map<String, dynamic>.from(planData));
+        final warningsList = planMap['warnings'] as List?;
+        if (warningsList != null && warningsList.isNotEmpty) {
+          return warningsList.map((e) => e.toString()).toList();
+        }
+      } catch (_) {}
+    }
+    return [];
   }
 
   int _calculateDaysCount() {
@@ -341,6 +374,69 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
   }
 
   List<Map<String, dynamic>> _buildDailySchedule(List<String> places, int days) {
+    // 1. Check if AI-generated itinerary plan exists
+    final planData = widget.trip['itineraryPlan'];
+    if (planData != null) {
+      try {
+        final Map<String, dynamic> planMap = planData is Map<String, dynamic>
+            ? planData
+            : (planData is ItineraryPlan ? planData.toJson() : Map<String, dynamic>.from(planData));
+        final scheduleList = (planMap['days'] ?? planMap['schedule']) as List?;
+        if (scheduleList != null && scheduleList.isNotEmpty) {
+          final List<Map<String, dynamic>> parsedSchedule = [];
+          for (var dayItem in scheduleList) {
+            final dayMap = Map<String, dynamic>.from(dayItem);
+            final dayNum = dayMap['day_number'] ?? dayMap['dayNumber'] ?? (parsedSchedule.length + 1);
+            final dateStr = (dayMap['date'] ?? '').toString();
+            final stopsList = (dayMap['stops'] as List?) ?? [];
+            final List<Map<String, String>> activities = [];
+
+            for (var stopItem in stopsList) {
+              final stopMap = Map<String, dynamic>.from(stopItem);
+              final placeName = (stopMap['name'] ?? stopMap['place_name'] ?? stopMap['placeName'] ?? '').toString();
+              final timeStr = (stopMap['time'] ?? '').toString();
+              final stopType = (stopMap['activity_type'] ?? stopMap['stop_type'] ?? stopMap['stopType'] ?? 'visit').toString().toUpperCase();
+              final activity = (stopMap['notes'] ?? stopMap['activity'] ?? '').toString();
+              final address = (stopMap['address'] ?? '').toString();
+              final durationMins = stopMap['duration_mins'] ?? stopMap['durationMins'] ?? 60;
+              final transitMins = stopMap['transit_mins'] ?? stopMap['transitMins'];
+
+              String period = stopType;
+              if (transitMins != null && transitMins > 0) {
+                period += ' • ${transitMins}m transit';
+              } else if (durationMins > 0) {
+                period += ' • ${durationMins}m';
+              }
+
+              activities.add({
+                'place': placeName.isNotEmpty ? placeName : (activity.isNotEmpty ? activity : 'Scheduled Stop'),
+                'time': timeStr.isNotEmpty ? timeStr : 'Flexible Time',
+                'period': period,
+                'activity': activity,
+                'address': address,
+                'stopType': stopType,
+              });
+            }
+
+            if (activities.isNotEmpty) {
+              parsedSchedule.add({
+                'dayNumber': dayNum,
+                'title': dateStr.isNotEmpty ? 'Day $dayNum • $dateStr' : 'Day $dayNum • Highlights',
+                'activities': activities,
+              });
+            }
+          }
+
+          if (parsedSchedule.isNotEmpty) {
+            return parsedSchedule;
+          }
+        }
+      } catch (e) {
+        debugPrint('Error parsing itineraryPlan: $e');
+      }
+    }
+
+    // Fallback: heuristic distribution
     if (places.isEmpty) return [];
 
     int actualDays = math.max(1, math.min(days, places.length));
@@ -372,6 +468,9 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
           'place': placeName,
           'time': timeSlot,
           'period': period,
+          'activity': 'Explore and enjoy $placeName',
+          'address': '',
+          'stopType': 'VISIT',
         });
 
         placeIdx++;
@@ -937,6 +1036,8 @@ Plan crafted with NexTripia-AI Travel Companion!
 
   Widget _buildItinerarySection(List<Map<String, dynamic>> schedule) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final warnings = _getItineraryWarnings();
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16.0),
       child: Column(
@@ -967,6 +1068,52 @@ Plan crafted with NexTripia-AI Travel Companion!
           ),
           const SizedBox(height: 14),
 
+          // Schedule Validation Notice (Step 8 of PDF)
+          if (warnings.isNotEmpty) ...[
+            Container(
+              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF59E0B).withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.4)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: Color(0xFFF59E0B), size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Schedule Validation Flags',
+                          style: TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFFD97706),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        ...warnings.map((w) => Padding(
+                          padding: const EdgeInsets.only(bottom: 2),
+                          child: Text(
+                            '• $w',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: isDark ? const Color(0xFFFDE68A) : const Color(0xFF92400E),
+                            ),
+                          ),
+                        )),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
           if (schedule.isEmpty)
             Container(
               padding: const EdgeInsets.all(20),
@@ -984,6 +1131,7 @@ Plan crafted with NexTripia-AI Travel Companion!
           else
             ...schedule.map((dayPlan) {
               final dayNum = dayPlan['dayNumber'] as int;
+              final dayTitle = (dayPlan['title'] ?? 'Day $dayNum').toString();
               final activities = dayPlan['activities'] as List<Map<String, String>>;
 
               return Container(
@@ -1032,7 +1180,7 @@ Plan crafted with NexTripia-AI Travel Companion!
                           const SizedBox(width: 10),
                           Expanded(
                             child: Text(
-                              '${activities.length} Destinations Planned',
+                              dayTitle,
                               style: TextStyle(
                                 fontSize: 13,
                                 fontWeight: FontWeight.w600,
@@ -1054,6 +1202,11 @@ Plan crafted with NexTripia-AI Travel Companion!
                           final placeName = act['place']!;
                           final isVisited = _visitedPlaces.contains(placeName);
                           final isLast = idx == activities.length - 1;
+                          final stopType = act['stopType'] ?? 'VISIT';
+                          final activityDesc = act['activity'] ?? '';
+                          final address = act['address'] ?? '';
+                          final itemColor = _getCategoryColor(placeName, stopType);
+                          final itemIcon = _getCategoryIcon(placeName, stopType);
 
                           return Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1082,7 +1235,7 @@ Plan crafted with NexTripia-AI Travel Companion!
                                         border: Border.all(
                                           color: isVisited
                                               ? const Color(0xFF059669)
-                                              : const Color(0xFF6366F1),
+                                              : itemColor,
                                           width: 2,
                                         ),
                                       ),
@@ -1090,7 +1243,7 @@ Plan crafted with NexTripia-AI Travel Companion!
                                         child: Icon(
                                           isVisited ? Icons.check : Icons.circle,
                                           size: isVisited ? 14 : 8,
-                                          color: isVisited ? Colors.white : const Color(0xFF6366F1),
+                                          color: isVisited ? Colors.white : itemColor,
                                         ),
                                       ),
                                     ),
@@ -1098,7 +1251,7 @@ Plan crafted with NexTripia-AI Travel Companion!
                                   if (!isLast)
                                     Container(
                                       width: 2,
-                                      height: 64,
+                                      height: activityDesc.isNotEmpty ? 80 : 64,
                                       color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
                                     ),
                                 ],
@@ -1127,9 +1280,9 @@ Plan crafted with NexTripia-AI Travel Companion!
                                       Row(
                                         children: [
                                           Icon(
-                                            _getCategoryIcon(placeName),
+                                            itemIcon,
                                             size: 16,
-                                            color: _getCategoryColor(placeName),
+                                            color: itemColor,
                                           ),
                                           const SizedBox(width: 6),
                                           Expanded(
@@ -1160,6 +1313,41 @@ Plan crafted with NexTripia-AI Travel Companion!
                                           ),
                                         ],
                                       ),
+                                      if (activityDesc.isNotEmpty && activityDesc != placeName) ...[
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          activityDesc,
+                                          style: TextStyle(
+                                            fontSize: 12.5,
+                                            color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569),
+                                            height: 1.3,
+                                          ),
+                                        ),
+                                      ],
+                                      if (address.isNotEmpty) ...[
+                                        const SizedBox(height: 4),
+                                        Row(
+                                          children: [
+                                            Icon(
+                                              Icons.location_on_outlined,
+                                              size: 12,
+                                              color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+                                            ),
+                                            const SizedBox(width: 4),
+                                            Expanded(
+                                              child: Text(
+                                                address,
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
                                       const SizedBox(height: 6),
                                       Wrap(
                                         alignment: WrapAlignment.spaceBetween,
@@ -1191,7 +1379,7 @@ Plan crafted with NexTripia-AI Travel Companion!
                                             style: TextStyle(
                                               fontSize: 11,
                                               fontWeight: FontWeight.w700,
-                                              color: _getCategoryColor(placeName),
+                                              color: itemColor,
                                             ),
                                           ),
                                         ],
