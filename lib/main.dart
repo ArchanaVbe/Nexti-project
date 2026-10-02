@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:app_links/app_links.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import 'login_screen.dart';
 import 'home_screen.dart';
