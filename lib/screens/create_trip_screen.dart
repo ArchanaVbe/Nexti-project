@@ -827,8 +827,14 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
     if (result != null && result is Map<String, dynamic> && mounted) {
       final destName = result['destinationName']?.toString() ?? '';
-      final startName = result['currentLocationName']?.toString() ?? '';
+      String startName = result['currentLocationName']?.toString() ?? '';
+      if (startName.startsWith('Location (') || RegExp(r'^\s*\(?\s*\d+\.\d+').hasMatch(startName)) {
+        startName = 'Present Location, Karnataka';
+      }
       final destLatLng = result['destination'] as LatLng?;
+
+      _cityDebounce?.cancel();
+      _startPointDebounce?.cancel();
 
       setState(() {
         if (destName.isNotEmpty) {
@@ -846,11 +852,11 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         _stepWarningMessage = null;
         _citySuggestions = [];
         _startPointSuggestions = [];
+        _isSearchingCity = false;
+        _isSearchingStartPoint = false;
       });
 
-      if (destName.isNotEmpty) {
-        _onCityChanged(destName);
-      }
+      // Do not trigger suggestions when autofilling from Google Maps. Suggestions will only show when user manually types.
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

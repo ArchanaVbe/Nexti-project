@@ -536,16 +536,21 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
     final destName = destinationController.text.trim().isNotEmpty
         ? destinationController.text.trim()
         : 'Selected Destination';
-    final startName = currentLocationController.text.trim().isNotEmpty
-        ? currentLocationController.text.trim()
-        : 'Present Location';
+    String cleanStart = currentLocationController.text.trim();
+    if (cleanStart.isEmpty || cleanStart.startsWith('Location (') || RegExp(r'^\s*\(?\s*\d+\.\d+').hasMatch(cleanStart)) {
+      if (currentLocation != null) {
+        cleanStart = _findNearestKarnatakaCity(currentLocation!.latitude, currentLocation!.longitude) ?? 'Present Location, Karnataka';
+      } else {
+        cleanStart = 'Present Location, Karnataka';
+      }
+    }
 
     Navigator.pop(context, {
       'currentLocation': currentLocation,
       'destination': selectedDestination,
       'distance': distanceInKm,
       'travelTime': travelTime,
-      'currentLocationName': startName,
+      'currentLocationName': cleanStart,
       'destinationName': destName,
     });
   }
