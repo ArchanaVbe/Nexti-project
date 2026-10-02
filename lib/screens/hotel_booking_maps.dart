@@ -1,12 +1,11 @@
 import 'dart:math';
-
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 class HotelBookingMaps extends StatefulWidget {
   final LatLng userLocation;
 
-  const HotelBookingMaps({super.key, required this.userLocation});
+  const HotelBookingMaps({Key? key, required this.userLocation}) : super(key: key);
 
   @override
   State<HotelBookingMaps> createState() => _HotelBookingMapsState();
@@ -37,14 +36,14 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
           address: 'Davangere, Karnataka, India',
           distance: 2.5,
           travelTime: const Duration(minutes: 15),
-          imageUrl: 'https://images.unsplash.com/photo-1566073771259-6a8506099945?w=800&q=80',
+          imageUrl: 'https://images.unsplash.com/photo-1631049307264-da0ec9d70304?w=400&h=300&fit=crop',
           latitude: 14.4644,
           longitude: 75.9218,
           pricePerNight: 3500,
           checkInTime: '2:00 PM',
           checkOutTime: '11:00 AM',
-          amenities: ['Free WiFi', 'Pool', 'Restaurant', 'Gym'],
-          description: 'Luxury hotel with modern amenities and easy access to the city center.',
+          amenities: ['Free WiFi', 'Swimming Pool', 'Restaurant', 'Gym', 'Spa'],
+          description: 'A luxurious 5-star hotel in the heart of Davangere with world-class amenities.',
         ),
         Hotel(
           id: '2',
@@ -54,14 +53,31 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
           address: 'Mysuru, Karnataka, India',
           distance: 35.8,
           travelTime: const Duration(hours: 1, minutes: 10),
-          imageUrl: 'https://images.unsplash.com/photo-1520250497591-112f2f40a3f4?w=800&q=80',
+          imageUrl: 'https://images.unsplash.com/photo-1566073771259-6a8506099945?w=400&h=300&fit=crop',
           latitude: 12.2958,
           longitude: 76.6394,
           pricePerNight: 2800,
           checkInTime: '3:00 PM',
           checkOutTime: '12:00 PM',
-          amenities: ['Spa', 'Parking', 'Buffet', 'Garden'],
-          description: 'Premium resort experience with wellness and spacious rooms.',
+          amenities: ['Free WiFi', 'Ayurveda Spa', 'Multi-cuisine Restaurant', 'Gardens'],
+          description: 'A premium resort offering traditional Ayurveda treatments and modern comfort.',
+        ),
+        Hotel(
+          id: '3',
+          name: 'Harihara Heritage Hotel',
+          rating: 4.0,
+          reviews: 180,
+          address: 'Harihara, Karnataka, India',
+          distance: 45.2,
+          travelTime: const Duration(hours: 1, minutes: 30),
+          imageUrl: 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?w=400&h=300&fit=crop',
+          latitude: 14.1868,
+          longitude: 75.1277,
+          pricePerNight: 2200,
+          checkInTime: '1:00 PM',
+          checkOutTime: '10:00 AM',
+          amenities: ['Free WiFi', 'Temple View Room', 'Indian Restaurant', 'Parking'],
+          description: 'A heritage hotel with traditional architecture and cultural experiences.',
         ),
       ];
 
@@ -71,14 +87,15 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
 
   void _updateHotelMarkers() {
     hotelMarkers.clear();
-    for (final hotel in nearbyHotels) {
+    for (int i = 0; i < nearbyHotels.length; i++) {
+      final hotel = nearbyHotels[i];
       hotelMarkers.add(
         Marker(
           markerId: MarkerId(hotel.id),
           position: LatLng(hotel.latitude, hotel.longitude),
           infoWindow: InfoWindow(
             title: hotel.name,
-            snippet: '${hotel.distance} km • ₹${hotel.pricePerNight}',
+            snippet: '${hotel.distance} km - ₹${hotel.pricePerNight}/night',
           ),
           icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange),
           onTap: () => _selectHotel(hotel),
@@ -88,22 +105,20 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
   }
 
   Future<void> _selectHotel(Hotel hotel) async {
-    final distance = _calculateDistance(
-      widget.userLocation.latitude,
-      widget.userLocation.longitude,
-      hotel.latitude,
-      hotel.longitude,
-    );
-
     setState(() {
       selectedHotel = hotel;
+
       routeToHotel = Polyline(
         polylineId: const PolylineId('hotel_route'),
-        points: [widget.userLocation, LatLng(hotel.latitude, hotel.longitude)],
+        points: [
+          widget.userLocation,
+          LatLng(hotel.latitude, hotel.longitude),
+        ],
         color: Colors.green,
         width: 5,
         geodesic: true,
       );
+
       radiusCircles.clear();
       radiusCircles.add(Circle(
         circleId: const CircleId('hotel_radius'),
@@ -124,44 +139,36 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
       ),
     );
 
-    if (mounted) {
-      showModalBottomSheet(
-        context: context,
-        isScrollControlled: true,
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-        ),
-        builder: (context) => HotelDetailsSheet(
-          hotel: hotel,
-          distance: distance,
-          onBook: () {
-            Navigator.pop(context);
-            Navigator.pop(context, hotel);
-          },
-        ),
-      );
-    }
+    _showHotelDetails(hotel);
   }
 
-  double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
-    const earthRadiusKm = 6371.0;
-    final distanceLat = _toRadians(lat2 - lat1);
-    final distanceLon = _toRadians(lon2 - lon1);
-    final lat1Rad = _toRadians(lat1);
-    final lat2Rad = _toRadians(lat2);
-
-    final a = sin(distanceLat / 2) * sin(distanceLat / 2) +
-        sin(distanceLon / 2) * sin(distanceLon / 2) * cos(lat1Rad) * cos(lat2Rad);
-    final c = 2 * atan2(sqrt(a), sqrt(1 - a));
-    return earthRadiusKm * c;
+  void _showHotelDetails(Hotel hotel) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => HotelDetailsSheet(
+        hotel: hotel,
+        userLocation: widget.userLocation,
+        onBook: () => _handleHotelBooking(hotel),
+      ),
+    );
   }
 
-  double _toRadians(double degree) => degree * pi / 180;
+  void _handleHotelBooking(Hotel hotel) {
+    Navigator.pop(context);
+    Navigator.pop(context, hotel);
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Select Hotel')),
+      appBar: AppBar(
+        title: const Text('Select Hotel'),
+        elevation: 0,
+      ),
       body: Stack(
         children: [
           GoogleMap(
@@ -193,7 +200,7 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withOpacity(0.1),
-                      blurRadius: 8,
+                      blurRadius: 10,
                     ),
                   ],
                 ),
@@ -260,11 +267,11 @@ class HotelCard extends StatelessWidget {
   final VoidCallback onTap;
 
   const HotelCard({
-    super.key,
+    Key? key,
     required this.hotel,
     required this.isSelected,
     required this.onTap,
-  });
+  }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
@@ -274,21 +281,61 @@ class HotelCard extends StatelessWidget {
       child: GestureDetector(
         onTap: onTap,
         child: Card(
-          elevation: isSelected ? 6 : 2,
+          elevation: isSelected ? 8 : 2,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            side: isSelected ? const BorderSide(color: Colors.blue, width: 2) : BorderSide.none,
+            side: isSelected
+                ? const BorderSide(color: Colors.blue, width: 2)
+                : BorderSide.none,
           ),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              ClipRRect(
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-                child: Image.network(
-                  hotel.imageUrl,
-                  height: 120,
-                  width: double.infinity,
-                  fit: BoxFit.cover,
-                ),
+              Stack(
+                children: [
+                  ClipRRect(
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(11)),
+                    child: Image.network(
+                      hotel.imageUrl,
+                      height: 120,
+                      width: double.infinity,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) {
+                        return Container(
+                          height: 120,
+                          color: Colors.grey[300],
+                          child: const Icon(Icons.hotel, size: 40),
+                        );
+                      },
+                    ),
+                  ),
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.amber,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.star, size: 14, color: Colors.white),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${hotel.rating}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
               Padding(
                 padding: const EdgeInsets.all(12),
@@ -297,18 +344,55 @@ class HotelCard extends StatelessWidget {
                   children: [
                     Text(
                       hotel.name,
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
                     ),
                     const SizedBox(height: 4),
-                    Text('${hotel.distance} km away', style: const TextStyle(color: Colors.grey)),
+                    Text(
+                      '${hotel.reviews} reviews',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: Colors.grey[600],
+                          ),
+                    ),
                     const SizedBox(height: 8),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('${hotel.travelTime.inMinutes} mins', style: const TextStyle(color: Colors.blue)),
-                        Text('₹${hotel.pricePerNight}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '${hotel.distance} km',
+                                style: Theme.of(context).textTheme.labelSmall,
+                              ),
+                              Text(
+                                '${hotel.travelTime.inMinutes} mins',
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: Colors.blue,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            '₹${hotel.pricePerNight}',
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                  color: Colors.blue,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                          ),
+                        ),
                       ],
                     ),
                   ],
@@ -324,63 +408,248 @@ class HotelCard extends StatelessWidget {
 
 class HotelDetailsSheet extends StatelessWidget {
   final Hotel hotel;
-  final double distance;
+  final LatLng userLocation;
   final VoidCallback onBook;
 
   const HotelDetailsSheet({
-    super.key,
+    Key? key,
     required this.hotel,
-    required this.distance,
+    required this.userLocation,
     required this.onBook,
-  });
+  }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
-      child: Padding(
+      child: Container(
         padding: const EdgeInsets.all(16),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Text(
+                    hotel.name,
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
             ClipRRect(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(8),
               child: Image.network(
                 hotel.imageUrl,
-                height: 180,
+                height: 200,
                 width: double.infinity,
                 fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) {
+                  return Container(
+                    height: 200,
+                    color: Colors.grey[300],
+                    child: const Icon(Icons.hotel, size: 80),
+                  );
+                },
               ),
             ),
             const SizedBox(height: 16),
-            Text(
-              hotel.name,
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
             Row(
               children: [
-                const Icon(Icons.star, color: Colors.amber, size: 18),
-                const SizedBox(width: 4),
-                Text('${hotel.rating} (${hotel.reviews} reviews)'),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.amber,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.star, color: Colors.white, size: 16),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${hotel.rating}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '${hotel.reviews} reviews',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.grey[600],
+                      ),
+                ),
               ],
             ),
             const SizedBox(height: 16),
-            Text(hotel.description),
+            Text(
+              'About',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              hotel.description,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.grey[700],
+              ),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.05),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.location_on, color: Colors.blue, size: 18),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Location',
+                              style: Theme.of(context).textTheme.labelSmall,
+                            ),
+                            Text(
+                              hotel.address,
+                              style: Theme.of(context).textTheme.bodySmall,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const Divider(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Row(
+                          children: [
+                            const Icon(Icons.directions, color: Colors.blue, size: 18),
+                            const SizedBox(width: 8),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Distance',
+                                  style: Theme.of(context).textTheme.labelSmall,
+                                ),
+                                Text(
+                                  '${hotel.distance} km',
+                                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.blue,
+                                      ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      Expanded(
+                        child: Row(
+                          children: [
+                            const Icon(Icons.timer, color: Colors.blue, size: 18),
+                            const SizedBox(width: 8),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Travel Time',
+                                  style: Theme.of(context).textTheme.labelSmall,
+                                ),
+                                Text(
+                                  '${hotel.travelTime.inMinutes} mins',
+                                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.blue,
+                                      ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 16),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Distance: ${distance.toStringAsFixed(1)} km'),
-                Text('Travel: ${hotel.travelTime.inMinutes} mins'),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Check-in',
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        hotel.checkInTime,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Check-out',
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        hotel.checkOutTime,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 16),
-            Text('Address: ${hotel.address}'),
-            const SizedBox(height: 16),
-            Text('Check-in: ${hotel.checkInTime}'),
-            Text('Check-out: ${hotel.checkOutTime}'),
-            const SizedBox(height: 16),
+            Text(
+              'Amenities',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            const SizedBox(height: 8),
             Wrap(
               spacing: 8,
               runSpacing: 8,
@@ -389,19 +658,37 @@ class HotelDetailsSheet extends StatelessWidget {
                     (amenity) => Chip(
                       label: Text(amenity),
                       backgroundColor: Colors.blue.withOpacity(0.1),
+                      labelStyle: TextStyle(
+                        color: Colors.blue[700],
+                        fontSize: 12,
+                      ),
                     ),
                   )
                   .toList(),
             ),
-            const SizedBox(height: 20),
-            const Divider(),
-            const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('Price per night'),
-                Text('₹${hotel.pricePerNight}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-              ],
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.05),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Price per Night',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  Text(
+                    '₹${hotel.pricePerNight}',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.green[700],
+                        ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 16),
             SizedBox(
@@ -411,11 +698,21 @@ class HotelDetailsSheet extends StatelessWidget {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.blue,
                   padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
                 ),
-                child: const Text('Book Now', style: TextStyle(color: Colors.white)),
+                child: const Text(
+                  'Book Now',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
               ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
           ],
         ),
       ),
