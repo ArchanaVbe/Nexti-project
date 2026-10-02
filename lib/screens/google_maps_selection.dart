@@ -1,19 +1,28 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:location/location.dart' as location_pkg;
+import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
+import '../services/karnataka_places.dart';
 
 class GoogleMapsSelection extends StatefulWidget {
-  const GoogleMapsSelection({super.key});
+  final String? initialDestination;
+  final String? initialStartPoint;
+  final LatLng? initialDestinationLocation;
+
+  const GoogleMapsSelection({
+    super.key,
+    this.initialDestination,
+    this.initialStartPoint,
+    this.initialDestinationLocation,
+  });
 
   @override
   State<GoogleMapsSelection> createState() => _GoogleMapsSelectionState();
 }
 
 class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
-  late GoogleMapController mapController;
-  final location_pkg.Location locationController = location_pkg.Location();
+  GoogleMapController? mapController;
   final Geocoding _geocoding = Geocoding();
 
   LatLng? currentLocation;
@@ -28,94 +37,312 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
   double? distanceInKm;
   Duration? travelTime;
   bool isLoading = true;
+  bool isFetchingLocation = false;
+  bool isSearchingDestination = false;
+  List<KarnatakaPlace> destinationSuggestions = [];
+
+  // Popular quick-pick destinations
+  final List<String> popularDestinations = [
+    'Shimoga',
+    'Coorg',
+    'Mysuru',
+    'Hampi',
+    'Bengaluru',
+    'Chikmagalur',
+    'Gokarna',
+    'Davanagere',
+  ];
 
   @override
   void initState() {
     super.initState();
+    if (widget.initialStartPoint != null && widget.initialStartPoint!.isNotEmpty) {
+      currentLocationController.text = widget.initialStartPoint!;
+    }
+    if (widget.initialDestination != null && widget.initialDestination!.isNotEmpty) {
+      destinationController.text = widget.initialDestination!;
+    }
+    if (widget.initialDestinationLocation != null) {
+      selectedDestination = widget.initialDestinationLocation;
+    }
+
     _fetchCurrentLocation();
   }
 
   Future<void> _fetchCurrentLocation() async {
+    setState(() => isFetchingLocation = true);
     try {
-      final locationData = await locationController.getLocation();
-      final lat = locationData.latitude;
-      final lng = locationData.longitude;
-
-      if (lat == null || lng == null) {
-        setState(() => isLoading = false);
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        // Fallback default (Bengaluru) if GPS disabled
+        _setDefaultLocation();
         return;
       }
 
-      final fetchedLocation = LatLng(lat, lng);
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          _setDefaultLocation();
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        _setDefaultLocation();
+        return;
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 8),
+        ),
+      );
+
+      final fetchedLocation = LatLng(position.latitude, position.longitude);
       setState(() {
         currentLocation = fetchedLocation;
         isLoading = false;
+        isFetchingLocation = false;
       });
 
-      try {
-        final placemarks = await _geocoding.placemarkFromCoordinates(lat, lng);
-        if (placemarks.isNotEmpty && mounted) {
-          setState(() {
-            currentLocationController.text =
-                '${placemarks[0].locality ?? ''}, ${placemarks[0].administrativeArea ?? ''}'.trim();
-          });
+      // Reverse geocode if start location text is empty
+      if (currentLocationController.text.trim().isEmpty) {
+        try {
+          final placemarks = await _geocoding.placemarkFromCoordinates(
+            position.latitude,
+            position.longitude,
+          );
+          if (placemarks.isNotEmpty && mounted) {
+            final p = placemarks[0];
+            final placeName = [
+              p.locality,
+              p.subAdministrativeArea,
+              p.administrativeArea,
+            ].where((e) => e != null && e.isNotEmpty).join(', ');
+            setState(() {
+              currentLocationController.text = placeName.isNotEmpty ? placeName : 'Current Location';
+            });
+          }
+        } catch (_) {
+          if (mounted && currentLocationController.text.isEmpty) {
+            setState(() {
+              currentLocationController.text = 'Current Location';
+            });
+          }
         }
-      } catch (_) {}
+      }
 
       _addCurrentLocationMarker();
       _updateMapCamera(fetchedLocation);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error fetching location: $e')),
-        );
+
+      // If initial destination was already passed, resolve and draw route
+      if (widget.initialDestination != null && widget.initialDestination!.isNotEmpty) {
+        _resolveDestinationAndRoute(widget.initialDestination!);
       }
-      setState(() => isLoading = false);
+    } catch (e) {
+      _setDefaultLocation();
+    }
+  }
+
+  void _setDefaultLocation() {
+    // Default to Bengaluru center
+    final fallback = const LatLng(12.9716, 77.5946);
+    setState(() {
+      currentLocation ??= fallback;
+      if (currentLocationController.text.isEmpty) {
+        currentLocationController.text = 'Bengaluru, Karnataka';
+      }
+      isLoading = false;
+      isFetchingLocation = false;
+    });
+    _addCurrentLocationMarker();
+    _updateMapCamera(currentLocation!);
+
+    if (widget.initialDestination != null && widget.initialDestination!.isNotEmpty) {
+      _resolveDestinationAndRoute(widget.initialDestination!);
     }
   }
 
   void _addCurrentLocationMarker() {
     if (currentLocation == null) return;
-
     setState(() {
+      markers.removeWhere((m) => m.markerId.value == 'current');
       markers.add(
         Marker(
           markerId: const MarkerId('current'),
           position: currentLocation!,
-          infoWindow: const InfoWindow(title: 'Your Location'),
-          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+          infoWindow: InfoWindow(
+            title: 'Your Location',
+            snippet: currentLocationController.text,
+          ),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
         ),
       );
     });
   }
 
-  Future<void> _updateMapCamera(LatLng position) async {
-    if (!mounted) return;
-    await mapController.animateCamera(
+  Future<void> _updateMapCamera(LatLng position, {double zoom = 13}) async {
+    if (!mounted || mapController == null) return;
+    await mapController!.animateCamera(
       CameraUpdate.newCameraPosition(
-        CameraPosition(target: position, zoom: 14),
+        CameraPosition(target: position, zoom: zoom),
       ),
     );
   }
 
-  Future<void> _drawRoute() async {
+  Future<void> _fitRouteBounds() async {
+    if (!mounted || mapController == null) return;
+    if (currentLocation == null || selectedDestination == null) return;
+
+    final southWest = LatLng(
+      min(currentLocation!.latitude, selectedDestination!.latitude),
+      min(currentLocation!.longitude, selectedDestination!.longitude),
+    );
+    final northEast = LatLng(
+      max(currentLocation!.latitude, selectedDestination!.latitude),
+      max(currentLocation!.longitude, selectedDestination!.longitude),
+    );
+
+    final bounds = LatLngBounds(southwest: southWest, northeast: northEast);
+    try {
+      await mapController!.animateCamera(
+        CameraUpdate.newLatLngBounds(bounds, 80),
+      );
+    } catch (_) {
+      // Fallback center
+      final center = LatLng(
+        (currentLocation!.latitude + selectedDestination!.latitude) / 2,
+        (currentLocation!.longitude + selectedDestination!.longitude) / 2,
+      );
+      await _updateMapCamera(center, zoom: 8);
+    }
+  }
+
+  Future<void> _resolveDestinationAndRoute(String query) async {
+    final clean = query.trim();
+    if (clean.isEmpty) return;
+
+    setState(() => isSearchingDestination = true);
+
+    LatLng? resolvedPos;
+    String resolvedName = clean;
+
+    // 1. Try Karnataka places registry for instantaneous exact/fuzzy match
+    for (final p in KarnatakaPlacesRegistry.destinations) {
+      final pName = p.name.toLowerCase();
+      final qLower = clean.toLowerCase();
+      if (pName.contains(qLower) || qLower.contains(p.name.split(',').first.toLowerCase())) {
+        resolvedPos = LatLng(p.lat, p.lng);
+        resolvedName = p.name.split(',').first.trim();
+        break;
+      }
+      for (final kw in p.keywords) {
+        if (kw.toLowerCase() == qLower || qLower.contains(kw.toLowerCase())) {
+          resolvedPos = LatLng(p.lat, p.lng);
+          resolvedName = p.name.split(',').first.trim();
+          break;
+        }
+      }
+      if (resolvedPos != null) break;
+    }
+
+    // 2. Fallback to geocoding if not in registry
+    if (resolvedPos == null) {
+      try {
+        final locations = await _geocoding.locationFromAddress('$clean, Karnataka, India');
+        if (locations.isNotEmpty) {
+          resolvedPos = LatLng(locations[0].latitude, locations[0].longitude);
+        }
+      } catch (_) {
+        try {
+          final locations = await _geocoding.locationFromAddress(clean);
+          if (locations.isNotEmpty) {
+            resolvedPos = LatLng(locations[0].latitude, locations[0].longitude);
+          }
+        } catch (_) {}
+      }
+    }
+
+    setState(() => isSearchingDestination = false);
+
+    if (resolvedPos != null) {
+      setState(() {
+        selectedDestination = resolvedPos;
+        destinationController.text = resolvedName;
+        destinationSuggestions = [];
+      });
+      _drawRoute();
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not locate "$clean". Tap on map to pin destination.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _onDestinationQueryChanged(String query) async {
+    final clean = query.trim().toLowerCase();
+    if (clean.isEmpty) {
+      setState(() => destinationSuggestions = []);
+      return;
+    }
+
+    final matches = KarnatakaPlacesRegistry.destinations.where((p) {
+      final nameLower = p.name.toLowerCase();
+      return nameLower.contains(clean) ||
+          p.keywords.any((kw) => kw.toLowerCase().contains(clean));
+    }).take(6).toList();
+
+    setState(() {
+      destinationSuggestions = matches;
+    });
+  }
+
+  Future<void> _handleMapTap(LatLng position) async {
+    setState(() {
+      selectedDestination = position;
+      destinationSuggestions = [];
+    });
+
+    try {
+      final placemarks = await _geocoding.placemarkFromCoordinates(
+        position.latitude,
+        position.longitude,
+      );
+      if (placemarks.isNotEmpty && mounted) {
+        final p = placemarks[0];
+        final parts = [p.locality, p.subAdministrativeArea, p.administrativeArea]
+            .where((e) => e != null && e.isNotEmpty)
+            .toList();
+        setState(() {
+          destinationController.text = parts.isNotEmpty
+              ? parts.first!
+              : '${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}';
+        });
+      }
+    } catch (_) {
+      if (mounted && destinationController.text.isEmpty) {
+        setState(() {
+          destinationController.text =
+              '${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}';
+        });
+      }
+    }
+
+    _drawRoute();
+  }
+
+  void _drawRoute() {
     if (currentLocation == null || selectedDestination == null) return;
 
     final distance = _calculateDistance(currentLocation!, selectedDestination!);
     final time = _estimateTravelTime(distance);
-
-    try {
-      final placemarks = await _geocoding.placemarkFromCoordinates(
-        selectedDestination!.latitude,
-        selectedDestination!.longitude,
-      );
-      if (placemarks.isNotEmpty && mounted) {
-        setState(() {
-          destinationController.text =
-              '${placemarks[0].locality ?? ''}, ${placemarks[0].administrativeArea ?? ''}'.trim();
-        });
-      }
-    } catch (_) {}
 
     setState(() {
       distanceInKm = distance;
@@ -123,48 +350,59 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
 
       markers.clear();
       _addCurrentLocationMarker();
+
+      // Destination Marker (Red pin with info)
       markers.add(
         Marker(
           markerId: const MarkerId('destination'),
           position: selectedDestination!,
-          infoWindow: const InfoWindow(title: 'Destination'),
+          infoWindow: InfoWindow(
+            title: destinationController.text.isNotEmpty
+                ? destinationController.text
+                : 'Destination',
+            snippet: '${distance.toStringAsFixed(1)} km away • ${time.inHours > 0 ? "${time.inHours}h ${time.inMinutes % 60}m" : "${time.inMinutes} mins"}',
+          ),
           icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
         ),
       );
 
+      // Route Polyline (Google Maps Blue)
       polylines.clear();
       polylines.add(
         Polyline(
-          polylineId: const PolylineId('route'),
+          polylineId: const PolylineId('route_preview'),
           points: [currentLocation!, selectedDestination!],
-          color: Colors.blue,
+          color: const Color(0xFF4285F4),
           width: 5,
           geodesic: true,
         ),
       );
 
+      // Highlight Radius Circle (500m & 1km radius like Google Maps destination highlight)
       circles.clear();
       circles.add(
         Circle(
-          circleId: const CircleId('radius_500m'),
+          circleId: const CircleId('radius_inner'),
           center: selectedDestination!,
           radius: 500,
-          fillColor: Colors.blue.withOpacity(0.1),
-          strokeColor: Colors.blue.withOpacity(0.5),
+          fillColor: const Color(0xFF4285F4).withValues(alpha: 0.15),
+          strokeColor: const Color(0xFF4285F4).withValues(alpha: 0.6),
           strokeWidth: 2,
         ),
       );
       circles.add(
         Circle(
-          circleId: const CircleId('radius_1km'),
+          circleId: const CircleId('radius_outer'),
           center: selectedDestination!,
-          radius: 1000,
-          fillColor: Colors.transparent,
-          strokeColor: Colors.blue.withOpacity(0.3),
+          radius: 1200,
+          fillColor: const Color(0xFF4285F4).withValues(alpha: 0.05),
+          strokeColor: const Color(0xFF4285F4).withValues(alpha: 0.3),
           strokeWidth: 1,
         ),
       );
     });
+
+    _fitRouteBounds();
   }
 
   double _calculateDistance(LatLng start, LatLng end) {
@@ -183,191 +421,469 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
   double _toRadians(double degree) => degree * pi / 180;
 
   Duration _estimateTravelTime(double distanceInKm) {
-    final minutes = (distanceInKm / 40 * 60).round();
-    return Duration(minutes: minutes);
+    // Average 45 km/h driving speed in mixed terrain + highway
+    final minutes = (distanceInKm / 45 * 60).round();
+    return Duration(minutes: max(1, minutes));
+  }
+
+  String _formatTravelTime(Duration d) {
+    if (d.inHours > 0) {
+      final mins = d.inMinutes % 60;
+      return mins > 0 ? '${d.inHours} hr $mins min' : '${d.inHours} hr';
+    }
+    return '${d.inMinutes} mins';
   }
 
   void _handleDone() {
-    if (currentLocation == null || selectedDestination == null) {
+    if (selectedDestination == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select both locations on the map')),
+        const SnackBar(
+          content: Text('Please select or tap a destination on the map first.'),
+          backgroundColor: Colors.redAccent,
+        ),
       );
       return;
     }
+
+    final destName = destinationController.text.trim().isNotEmpty
+        ? destinationController.text.trim()
+        : 'Selected Destination';
+    final startName = currentLocationController.text.trim().isNotEmpty
+        ? currentLocationController.text.trim()
+        : 'Present Location';
 
     Navigator.pop(context, {
       'currentLocation': currentLocation,
       'destination': selectedDestination,
       'distance': distanceInKm,
       'travelTime': travelTime,
-      'currentLocationName': currentLocationController.text,
-      'destinationName': destinationController.text,
+      'currentLocationName': startName,
+      'destinationName': destName,
     });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Select Location'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.pop(context),
-        ),
-        elevation: 0,
-      ),
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : currentLocation == null
-              ? const Center(child: Text('Unable to fetch current location'))
-              : Stack(
-                  children: [
-                    GoogleMap(
-                      onMapCreated: (GoogleMapController controller) {
-                        mapController = controller;
-                      },
-                      initialCameraPosition: CameraPosition(
-                        target: currentLocation!,
-                        zoom: 14,
-                      ),
-                      markers: markers,
-                      polylines: polylines,
-                      circles: circles,
-                      onTap: (LatLng position) {
-                        setState(() {
-                          selectedDestination = position;
-                        });
-                        _drawRoute();
-                      },
-                      myLocationEnabled: true,
-                      myLocationButtonEnabled: true,
-                      compassEnabled: true,
-                      zoomControlsEnabled: true,
-                    ),
-                    Positioned(
-                      top: 16,
-                      left: 16,
-                      right: 16,
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(10),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.1),
-                              blurRadius: 8,
-                            ),
-                          ],
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text('Current Location', style: TextStyle(fontSize: 12)),
-                            const SizedBox(height: 4),
-                            Text(
-                              currentLocationController.text.isNotEmpty
-                                  ? currentLocationController.text
-                                  : 'Fetching location...',
-                              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    if (distanceInKm != null && travelTime != null)
-                      Positioned(
-                        bottom: 110,
-                        left: 16,
-                        right: 16,
-                        child: Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.15),
-                                blurRadius: 12,
-                              ),
-                            ],
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'Route Details',
-                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                              ),
-                              const SizedBox(height: 10),
-                              Row(
-                                children: [
-                                  const Icon(Icons.location_on, color: Colors.blue),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      destinationController.text,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 12),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Expanded(
-                                    child: Row(
-                                      children: [
-                                        const Icon(Icons.directions_car, color: Colors.blue),
-                                        const SizedBox(width: 8),
-                                        Text('${distanceInKm!.toStringAsFixed(2)} km'),
-                                      ],
-                                    ),
-                                  ),
-                                  Expanded(
-                                    child: Row(
-                                      children: [
-                                        const Icon(Icons.timer, color: Colors.blue),
-                                        const SizedBox(width: 8),
-                                        Text('${travelTime!.inMinutes} mins'),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    Positioned(
-                      bottom: 16,
-                      left: 16,
-                      right: 16,
-                      child: ElevatedButton(
-                        onPressed: _handleDone,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.blue,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                        ),
-                        child: const Text(
-                          'Done',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
+      backgroundColor: const Color(0xFF0F172A),
+      body: SafeArea(
+        child: Stack(
+          children: [
+            // 1. Google Map View
+            if (isLoading)
+              const Center(
+                child: CircularProgressIndicator(color: Color(0xFF6366F1)),
+              )
+            else
+              GoogleMap(
+                onMapCreated: (GoogleMapController controller) {
+                  mapController = controller;
+                  if (currentLocation != null && selectedDestination != null) {
+                    _fitRouteBounds();
+                  }
+                },
+                initialCameraPosition: CameraPosition(
+                  target: currentLocation ?? const LatLng(12.9716, 77.5946),
+                  zoom: 12,
                 ),
+                markers: markers,
+                polylines: polylines,
+                circles: circles,
+                onTap: _handleMapTap,
+                myLocationEnabled: true,
+                myLocationButtonEnabled: false,
+                compassEnabled: true,
+                zoomControlsEnabled: false,
+              ),
+
+            // 2. Google Maps Navigation Header (Start & Destination Inputs + Directions)
+            Positioned(
+              top: 12,
+              left: 14,
+              right: 14,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.18),
+                          blurRadius: 14,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Top row with Back button & Header
+                        Row(
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.arrow_back, color: Color(0xFF1E293B)),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                              onPressed: () => Navigator.pop(context),
+                            ),
+                            const SizedBox(width: 10),
+                            const Expanded(
+                              child: Text(
+                                'Directions & Route Preview',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFF0F172A),
+                                ),
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF4285F4).withValues(alpha: 0.12),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.directions_rounded,
+                                color: Color(0xFF4285F4),
+                                size: 20,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+
+                        // Starting Location Input
+                        Row(
+                          children: [
+                            Container(
+                              width: 10,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF4285F4),
+                                shape: BoxShape.circle,
+                                border: Border.all(color: Colors.white, width: 2),
+                                boxShadow: const [
+                                  BoxShadow(color: Colors.black26, blurRadius: 3),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: TextField(
+                                controller: currentLocationController,
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFF0F172A),
+                                ),
+                                decoration: const InputDecoration(
+                                  hintText: 'Your starting location...',
+                                  hintStyle: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                                  isDense: true,
+                                  border: InputBorder.none,
+                                  contentPadding: EdgeInsets.symmetric(vertical: 4),
+                                ),
+                              ),
+                            ),
+                            if (isFetchingLocation)
+                              const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4285F4)),
+                              )
+                            else
+                              IconButton(
+                                icon: const Icon(Icons.my_location_rounded, color: Color(0xFF4285F4), size: 19),
+                                tooltip: 'Fetch Current GPS Location',
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                onPressed: _fetchCurrentLocation,
+                              ),
+                          ],
+                        ),
+
+                        // Divider with dots
+                        Padding(
+                          padding: const EdgeInsets.only(left: 4.0, top: 4.0, bottom: 4.0),
+                          child: Row(
+                            children: [
+                              Column(
+                                children: [
+                                  Container(width: 2, height: 4, color: const Color(0xFFCBD5E1)),
+                                  const SizedBox(height: 2),
+                                  Container(width: 2, height: 4, color: const Color(0xFFCBD5E1)),
+                                ],
+                              ),
+                              const SizedBox(width: 18),
+                              const Expanded(
+                                child: Divider(height: 1, thickness: 0.8, color: Color(0xFFE2E8F0)),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        // Destination Location Input
+                        Row(
+                          children: [
+                            const Icon(Icons.location_on_rounded, color: Color(0xFFEA4335), size: 18),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: TextField(
+                                controller: destinationController,
+                                onChanged: _onDestinationQueryChanged,
+                                onSubmitted: _resolveDestinationAndRoute,
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFF0F172A),
+                                ),
+                                decoration: const InputDecoration(
+                                  hintText: 'Enter destination or tap on map...',
+                                  hintStyle: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                                  isDense: true,
+                                  border: InputBorder.none,
+                                  contentPadding: EdgeInsets.symmetric(vertical: 4),
+                                ),
+                              ),
+                            ),
+                            if (isSearchingDestination)
+                              const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFEA4335)),
+                              )
+                            else if (destinationController.text.isNotEmpty)
+                              IconButton(
+                                icon: const Icon(Icons.search_rounded, color: Color(0xFF6366F1), size: 20),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                onPressed: () => _resolveDestinationAndRoute(destinationController.text),
+                              ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Destination Suggestions Dropdown
+                  if (destinationSuggestions.isNotEmpty)
+                    Container(
+                      margin: const EdgeInsets.only(top: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.15),
+                            blurRadius: 10,
+                          ),
+                        ],
+                      ),
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        padding: EdgeInsets.zero,
+                        itemCount: destinationSuggestions.length,
+                        separatorBuilder: (context, index) => const Divider(height: 1, thickness: 0.5),
+                        itemBuilder: (context, index) {
+                          final place = destinationSuggestions[index];
+                          return ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.place_rounded, color: Color(0xFFEA4335), size: 18),
+                            title: Text(
+                              place.name,
+                              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                            ),
+                            onTap: () {
+                              setState(() {
+                                destinationController.text = place.name.split(',').first.trim();
+                                selectedDestination = LatLng(place.lat, place.lng);
+                                destinationSuggestions = [];
+                              });
+                              _drawRoute();
+                            },
+                          );
+                        },
+                      ),
+                    ),
+
+                  // Quick Popular City Chips
+                  if (destinationSuggestions.isEmpty && selectedDestination == null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8.0),
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: popularDestinations.map((city) {
+                            return Padding(
+                              padding: const EdgeInsets.only(right: 6.0),
+                              child: ActionChip(
+                                label: Text(city),
+                                labelStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
+                                backgroundColor: const Color(0xFF1E293B).withValues(alpha: 0.85),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                                padding: const EdgeInsets.symmetric(horizontal: 4),
+                                onPressed: () {
+                                  destinationController.text = city;
+                                  _resolveDestinationAndRoute(city);
+                                },
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+
+            // 3. Floating Re-Center / GPS Button on Right
+            Positioned(
+              right: 16,
+              bottom: (distanceInKm != null) ? 180 : 90,
+              child: FloatingActionButton.small(
+                heroTag: 'gps_btn',
+                backgroundColor: Colors.white,
+                onPressed: () {
+                  if (currentLocation != null) {
+                    _updateMapCamera(currentLocation!, zoom: 14);
+                  } else {
+                    _fetchCurrentLocation();
+                  }
+                },
+                child: const Icon(Icons.my_location_rounded, color: Color(0xFF4285F4)),
+              ),
+            ),
+
+            // 4. Route Details Card (Travel Time, Distance & Radius)
+            if (distanceInKm != null && travelTime != null)
+              Positioned(
+                bottom: 84,
+                left: 14,
+                right: 14,
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.18),
+                        blurRadius: 16,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF4285F4).withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: const Icon(Icons.directions_car_rounded, color: Color(0xFF4285F4), size: 22),
+                              ),
+                              const SizedBox(width: 12),
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    _formatTravelTime(travelTime!),
+                                    style: const TextStyle(
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.w800,
+                                      color: Color(0xFF1E8E3E), // Green travel time
+                                    ),
+                                  ),
+                                  Text(
+                                    '${distanceInKm!.toStringAsFixed(1)} km • Fastest route',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500,
+                                      color: Color(0xFF64748B),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF4285F4).withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.radar_rounded, size: 14, color: Color(0xFF4285F4)),
+                                SizedBox(width: 4),
+                                Text(
+                                  'Radius Active',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF4285F4),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+            // 5. Done Button at Bottom
+            Positioned(
+              bottom: 16,
+              left: 14,
+              right: 14,
+              child: SizedBox(
+                height: 54,
+                child: ElevatedButton(
+                  onPressed: _handleDone,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF4285F4), // Google Maps Primary Blue
+                    foregroundColor: Colors.white,
+                    elevation: 6,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.check_circle_rounded, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        selectedDestination != null ? 'Done • Set Destination' : 'Done',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

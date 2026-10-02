@@ -13,6 +13,8 @@ import '../services/trip_api.dart';
 import '../services/karnataka_places.dart';
 import '../models/trip_plan_models.dart';
 import '../widgets/hotel_map_picker.dart';
+import 'google_maps_selection.dart';
+import 'hotel_booking_maps.dart';
 
 /// Automatically capitalizes the first letter of entered text
 class FirstLetterCapitalizationFormatter extends TextInputFormatter {
@@ -805,6 +807,63 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     });
   }
 
+  Future<void> _openGoogleMapsSelection() async {
+    final initialDest = _destinationController.text.trim();
+    final initialStart = _startPointController.text.trim();
+    final initialDestLoc = (_selectedCityLat != null && _selectedCityLng != null)
+        ? LatLng(_selectedCityLat!, _selectedCityLng!)
+        : null;
+
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => GoogleMapsSelection(
+          initialDestination: initialDest,
+          initialStartPoint: initialStart,
+          initialDestinationLocation: initialDestLoc,
+        ),
+      ),
+    );
+
+    if (result != null && result is Map<String, dynamic> && mounted) {
+      final destName = result['destinationName']?.toString() ?? '';
+      final startName = result['currentLocationName']?.toString() ?? '';
+      final destLatLng = result['destination'] as LatLng?;
+
+      setState(() {
+        if (destName.isNotEmpty) {
+          _destinationController.text = destName;
+        }
+        if (startName.isNotEmpty) {
+          _startPointController.text = startName;
+        }
+        if (destLatLng != null) {
+          _selectedCityLat = destLatLng.latitude;
+          _selectedCityLng = destLatLng.longitude;
+        }
+        _destinationError = null;
+        _startDateError = null;
+        _stepWarningMessage = null;
+        _citySuggestions = [];
+        _startPointSuggestions = [];
+      });
+
+      if (destName.isNotEmpty) {
+        _onCityChanged(destName);
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Autofilled from Google Maps: $destName (Starting: $startName)',
+          ),
+          backgroundColor: const Color(0xFF4285F4),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   Future<void> _openHotelMapPicker() async {
     final destName = _destinationController.text.trim().isNotEmpty
         ? _destinationController.text.trim()
@@ -813,31 +872,53 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     final destLat = _selectedCityLat ?? resolvedDest?.lat ?? 12.4244;
     final destLng = _selectedCityLng ?? resolvedDest?.lng ?? 75.7382;
 
-    final result = await Navigator.push<HotelPickResult>(
+    // Resolve user present location for distance & route calculation
+    LatLng userPos;
+    if (_startPointController.text.trim().isNotEmpty) {
+      final resolvedStart = KarnatakaPlacesRegistry.resolvePlace(_startPointController.text.trim());
+      if (resolvedStart != null) {
+        userPos = LatLng(resolvedStart.lat, resolvedStart.lng);
+      } else {
+        userPos = const LatLng(14.4644, 75.9218);
+      }
+    } else {
+      userPos = const LatLng(14.4644, 75.9218);
+    }
+
+    final result = await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => HotelMapPickerScreen(
-          initialCenter: LatLng(_hotelLat ?? destLat, _hotelLng ?? destLng),
-          destinationName: destName,
-          initialHotelName: _hotelController.text.trim(),
+        builder: (_) => HotelBookingMaps(
+          userLocation: userPos,
+          destinationCity: destName,
+          destinationLocation: LatLng(destLat, destLng),
         ),
       ),
     );
 
     if (result != null && mounted) {
-      setState(() {
-        _hotelController.text = result.name;
-        _hotelLat = result.lat;
-        _hotelLng = result.lng;
-        _hotelSuggestions = [];
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Hotel selected: ${result.name}'),
-          backgroundColor: const Color(0xFF6366F1),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      if (result is Hotel) {
+        setState(() {
+          _hotelController.text = result.name;
+          _hotelLat = result.latitude;
+          _hotelLng = result.longitude;
+          _hotelSuggestions = [];
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Selected Hotel: ${result.name} (₹${result.pricePerNight}/night)'),
+            backgroundColor: const Color(0xFF6366F1),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      } else if (result is HotelPickResult) {
+        setState(() {
+          _hotelController.text = result.name;
+          _hotelLat = result.lat;
+          _hotelLng = result.lng;
+          _hotelSuggestions = [];
+        });
+      }
     }
   }
 
@@ -1304,6 +1385,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     ValueChanged<String>? onChanged,
     Widget? suffixIcon,
     Widget? aboveFieldWidget,
+    VoidCallback? onPrefixIconTap,
   }) {
     final bool hasError = errorText != null && errorText.isNotEmpty;
 
@@ -1366,12 +1448,23 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
               color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
               fontWeight: FontWeight.normal,
             ),
-            prefixIcon: Icon(
-              icon,
-              color: hasError
-                  ? const Color(0xFFEF4444)
-                  : (isDark ? const Color(0xFF818CF8) : const Color(0xFF64748B)),
-            ),
+            prefixIcon: onPrefixIconTap != null
+                ? IconButton(
+                    icon: Icon(
+                      icon,
+                      color: hasError
+                          ? const Color(0xFFEF4444)
+                          : (isDark ? const Color(0xFF818CF8) : const Color(0xFF64748B)),
+                    ),
+                    tooltip: 'Open in Google Maps',
+                    onPressed: onPrefixIconTap,
+                  )
+                : Icon(
+                    icon,
+                    color: hasError
+                        ? const Color(0xFFEF4444)
+                        : (isDark ? const Color(0xFF818CF8) : const Color(0xFF64748B)),
+                  ),
             suffixIcon: suffixIcon,
             filled: true,
             fillColor: hasError
@@ -1663,6 +1756,12 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           errorText: _destinationError,
           maxLength: 100,
           textCapitalization: TextCapitalization.sentences,
+          onPrefixIconTap: _openGoogleMapsSelection,
+          suffixIcon: IconButton(
+            icon: const Icon(Icons.map_rounded, color: Color(0xFF4285F4)),
+            tooltip: 'Select on Google Maps',
+            onPressed: _openGoogleMapsSelection,
+          ),
           inputFormatters: [
             LengthLimitingTextInputFormatter(100),
             FirstLetterCapitalizationFormatter(),
@@ -1763,6 +1862,35 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
               );
             }
           },
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 0, bottom: 14, left: 4),
+          child: Row(
+            children: [
+              InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: _openGoogleMapsSelection,
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.directions_rounded, size: 14, color: Color(0xFF4285F4)),
+                      SizedBox(width: 6),
+                      Text(
+                        'Select route & destination on Google Maps',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF4285F4),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
         _buildTextField(
           label: 'Start Date',
@@ -1920,9 +2048,15 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           isDark: isDark,
           textCapitalization: TextCapitalization.words,
           onChanged: _onHotelChanged,
+          onPrefixIconTap: _openHotelMapPicker,
+          onTap: () {
+            if (_hotelController.text.trim().isEmpty) {
+              _openHotelMapPicker();
+            }
+          },
           suffixIcon: IconButton(
             icon: const Icon(Icons.map_rounded, color: Color(0xFF6366F1)),
-            tooltip: 'Choose on Map',
+            tooltip: 'Choose on Google Maps',
             onPressed: _openHotelMapPicker,
           ),
         ),
@@ -1932,9 +2066,9 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             children: [
               OutlinedButton.icon(
                 onPressed: _openHotelMapPicker,
-                icon: const Icon(Icons.pin_drop_rounded, size: 15, color: Color(0xFF6366F1)),
+                icon: const Icon(Icons.hotel_rounded, size: 15, color: Color(0xFF6366F1)),
                 label: const Text(
-                  'Choose on Map',
+                  'Choose Hotel on Google Maps',
                   style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF6366F1)),
                 ),
                 style: OutlinedButton.styleFrom(
