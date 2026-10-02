@@ -1,9 +1,8 @@
 import 'dart:math';
-
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:location/location.dart';
-import 'package:geocoding/geocoding.dart';
+import 'package:location/location.dart' as loc;
+import 'package:geocoding/geocoding.dart' as geo;
 
 class GoogleMapsSelection extends StatefulWidget {
   const GoogleMapsSelection({super.key});
@@ -14,7 +13,7 @@ class GoogleMapsSelection extends StatefulWidget {
 
 class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
   late GoogleMapController mapController;
-  final Location locationController = Location();
+  final loc.Location locationController = loc.Location();
 
   LatLng? currentLocation;
   LatLng? selectedDestination;
@@ -53,7 +52,7 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
       });
 
       try {
-        final placemarks = await placemarkFromCoordinates(lat, lng);
+        final placemarks = await geo.placemarkFromCoordinates(lat, lng);
         if (placemarks.isNotEmpty && mounted) {
           setState(() {
             currentLocationController.text =
@@ -78,12 +77,14 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
     if (currentLocation == null) return;
 
     setState(() {
-      markers.add(Marker(
-        markerId: const MarkerId('current'),
-        position: currentLocation!,
-        infoWindow: const InfoWindow(title: 'Your Location'),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
-      ));
+      markers.add(
+        Marker(
+          markerId: const MarkerId('current'),
+          position: currentLocation!,
+          infoWindow: const InfoWindow(title: 'Your Location'),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+        ),
+      );
     });
   }
 
@@ -103,7 +104,7 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
     final time = _estimateTravelTime(distance);
 
     try {
-      final placemarks = await placemarkFromCoordinates(
+      final placemarks = await geo.placemarkFromCoordinates(
         selectedDestination!.latitude,
         selectedDestination!.longitude,
       );
@@ -121,39 +122,47 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
 
       markers.clear();
       _addCurrentLocationMarker();
-      markers.add(Marker(
-        markerId: const MarkerId('destination'),
-        position: selectedDestination!,
-        infoWindow: const InfoWindow(title: 'Destination'),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
-      ));
+      markers.add(
+        Marker(
+          markerId: const MarkerId('destination'),
+          position: selectedDestination!,
+          infoWindow: const InfoWindow(title: 'Destination'),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+        ),
+      );
 
       polylines.clear();
-      polylines.add(Polyline(
-        polylineId: const PolylineId('route'),
-        points: [currentLocation!, selectedDestination!],
-        color: Colors.blue,
-        width: 5,
-        geodesic: true,
-      ));
+      polylines.add(
+        Polyline(
+          polylineId: const PolylineId('route'),
+          points: [currentLocation!, selectedDestination!],
+          color: Colors.blue,
+          width: 5,
+          geodesic: true,
+        ),
+      );
 
       circles.clear();
-      circles.add(Circle(
-        circleId: const CircleId('radius_500m'),
-        center: selectedDestination!,
-        radius: 500,
-        fillColor: Colors.blue.withOpacity(0.1),
-        strokeColor: Colors.blue.withOpacity(0.5),
-        strokeWidth: 2,
-      ));
-      circles.add(Circle(
-        circleId: const CircleId('radius_1km'),
-        center: selectedDestination!,
-        radius: 1000,
-        fillColor: Colors.transparent,
-        strokeColor: Colors.blue.withOpacity(0.3),
-        strokeWidth: 1,
-      ));
+      circles.add(
+        Circle(
+          circleId: const CircleId('radius_500m'),
+          center: selectedDestination!,
+          radius: 500,
+          fillColor: Colors.blue.withOpacity(0.1),
+          strokeColor: Colors.blue.withOpacity(0.5),
+          strokeWidth: 2,
+        ),
+      );
+      circles.add(
+        Circle(
+          circleId: const CircleId('radius_1km'),
+          center: selectedDestination!,
+          radius: 1000,
+          fillColor: Colors.transparent,
+          strokeColor: Colors.blue.withOpacity(0.3),
+          strokeWidth: 1,
+        ),
+      );
     });
   }
 
@@ -287,7 +296,10 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Text('Route Details', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                              const Text(
+                                'Route Details',
+                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                              ),
                               const SizedBox(height: 10),
                               Row(
                                 children: [
@@ -345,7 +357,11 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                         ),
                         child: const Text(
                           'Done',
-                          style: TextStyle(fontSize: 16, color: Colors.white, fontWeight: FontWeight.bold),
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
                     ),
