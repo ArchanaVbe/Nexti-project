@@ -8,6 +8,8 @@ import 'home_screen.dart';
 import 'theme/app_theme.dart';
 import 'services/presence_service.dart';
 import 'services/trip_invite_service.dart';
+import 'screens/google_maps_selection.dart';
+import 'screens/hotel_booking_maps.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,10 +19,8 @@ void main() async {
     debugPrint('Firebase initialization note: $e');
   }
 
-  // Initialize theme configurations
   await AppTheme.initializeTheme();
 
-  // If a user has an active session from a previous launch, start presence tracking
   final currentUser = FirebaseAuth.instance.currentUser;
   if (currentUser != null) {
     PresenceService.trackUserPresence(currentUser.uid);
@@ -49,7 +49,6 @@ class _NextTripiaAppState extends State<NextTripiaApp> {
   void _initDeepLinks() {
     _appLinks = AppLinks();
 
-    // Catches links when opened from cold start or running in background
     _appLinks.uriLinkStream.listen((uri) {
       if (uri.scheme == 'nexttripia' && uri.host == 'trip' && uri.path == '/join') {
         final code = uri.queryParameters['code'];
@@ -86,7 +85,6 @@ class _NextTripiaAppState extends State<NextTripiaApp> {
               child: child ?? const SizedBox(),
             );
           },
-          // Route dynamically based on whether an active session exists
           initialRoute: FirebaseAuth.instance.currentUser != null ? '/home' : '/login',
           routes: {
             '/login': (context) => const LoginScreen(),
@@ -95,6 +93,10 @@ class _NextTripiaAppState extends State<NextTripiaApp> {
                   body: Center(
                     child: Text('Trip Details Screen'),
                   ),
+                ),
+            '/google_maps_selection': (context) => const GoogleMapsSelection(),
+            '/hotel_booking_maps': (context) => const HotelBookingMaps(
+                  userLocation: LatLng(14.4644, 75.9218),
                 ),
           },
         );
