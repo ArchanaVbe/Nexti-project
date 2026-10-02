@@ -10,7 +10,7 @@ Defines:
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 env_path = Path(__file__).resolve().parent / ".env"
@@ -165,6 +165,7 @@ def build_daily_schedules_programmatic(
     start_point: str,
     end_point: str,
     travel_mode: str,
+    hotel: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Builds a structured daily schedule allocating stops, opening hours,
     meals, and routing travel times.
@@ -199,21 +200,26 @@ def build_daily_schedules_programmatic(
         day_idx = idx % num_days
         stops_per_day[day_idx].append(place)
 
+    hotel_name = hotel or start_point or "Hotel"
+
     for day_i, day_date in enumerate(dates):
         day_places = stops_per_day[day_i]
         place_names = [p["name"] for p in day_places]
 
+        # Day starts at start_point for Day 1, hotel for Day 2+
+        current_start_point = start_point if day_i == 0 else hotel_name
+
         # Compute route travel times using compute_route tool
         route_info = compute_route(
-            origin=start_point or "Hotel",
-            destination=end_point or start_point or "Hotel",
+            origin=current_start_point or "Starting Point",
+            destination=hotel_name,
             waypoints=place_names,
             travel_mode=travel_mode,
         )
         legs = route_info.get("legs", [])
 
         # Build chronologically sequenced timeline
-        current_hour = 9
+        current_hour = 6 # Start at 6 AM
         current_minute = 0
         scheduled_stops = []
 
@@ -222,7 +228,7 @@ def build_daily_schedules_programmatic(
             {
                 "time": f"{current_hour:02d}:{current_minute:02d} AM",
                 "place_id": "start_point",
-                "name": f"Start: {start_point or 'Hotel'}",
+                "name": f"Start: {current_start_point or 'Starting Point'}",
                 "activity_type": "start",
                 "duration_minutes": 15,
                 "travel_to_next_minutes": legs[0]["duration_minutes"] if legs else 15,
@@ -288,20 +294,25 @@ def build_daily_schedules_programmatic(
             current_minute = tot_min % 60
 
         # Final return
-        final_ampm = "AM" if current_hour < 12 else "PM"
-        final_display_h = current_hour if current_hour <= 12 else current_hour - 12
-        if final_display_h == 0:
-            final_display_h = 12
+        # Adjust so that the day ends at exactly 12:00 AM (next day) for 6 hrs sleep
+        if num_days > 1:
+            final_time_str = "12:00 AM" # Midnight
+        else:
+            final_ampm = "AM" if current_hour < 12 else "PM"
+            final_display_h = current_hour if current_hour <= 12 else current_hour - 12
+            if final_display_h == 0:
+                final_display_h = 12
+            final_time_str = f"{final_display_h:02d}:{current_minute:02d} {final_ampm}"
 
         scheduled_stops.append(
             {
-                "time": f"{final_display_h:02d}:{current_minute:02d} {final_ampm}",
+                "time": final_time_str,
                 "place_id": "final_stop",
-                "name": f"End: {end_point or start_point or 'Hotel'}",
+                "name": f"End: {hotel_name}",
                 "activity_type": "end",
                 "duration_minutes": 0,
                 "travel_to_next_minutes": 0,
-                "notes": "Arrival at final destination for the day",
+                "notes": "Arrival at hotel (6 hrs sleep schedule applied)" if num_days > 1 else "Arrival at resting location",
             }
         )
 

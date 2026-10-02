@@ -7,8 +7,13 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/trip_plan_models.dart';
+import 'karnataka_places.dart';
 
 class TripApi {
+  // In-memory discover cache: avoids re-fetching places for the same city
+  // within the same app session.  Key = "cityLower|lat1dp|lng1dp".
+  static final Map<String, DiscoverResponse> _discoverCache = {};
+
   // Default base URL based on platform
   static String get defaultBaseUrl {
     if (kIsWeb) {
@@ -34,7 +39,40 @@ class TripApi {
         return _cachedBaseUrl!;
       }
     } catch (_) {}
-    _cachedBaseUrl = defaultBaseUrl;
+
+    // Candidate URLs for Android emulator vs physical device vs web
+    final candidates = <String>[];
+    if (kIsWeb) {
+      candidates.add('http://127.0.0.1:8000');
+    } else if (Platform.isAndroid) {
+      // Prioritize localhost (works with adb reverse tcp:8000 tcp:8000), current LAN IP, then emulator
+      candidates.addAll([
+        'http://127.0.0.1:8000',
+        'http://192.168.0.203:8000',
+        'http://10.0.2.2:8000',
+      ]);
+    } else {
+      candidates.addAll([
+        'http://127.0.0.1:8000',
+        'http://192.168.0.203:8000',
+      ]);
+    }
+
+    // Fast probe with 1.2s timeout to auto-connect to the live backend
+    for (final candidate in candidates) {
+      try {
+        final res = await http
+            .get(Uri.parse('$candidate/'))
+            .timeout(const Duration(milliseconds: 1200));
+        if (res.statusCode == 200) {
+          debugPrint('Connected to backend at $candidate');
+          _cachedBaseUrl = candidate;
+          return _cachedBaseUrl!;
+        }
+      } catch (_) {}
+    }
+
+    _cachedBaseUrl = candidates.first;
     return _cachedBaseUrl!;
   }
 
@@ -52,14 +90,17 @@ class TripApi {
     String query, {
     String? types = 'cities',
     String? sessionToken,
+    String? destination,
   }) async {
     final cleanQ = query.trim();
     if (cleanQ.isEmpty) return [];
 
-    final baseUrl = await getBaseUrl();
-    final url = Uri.parse('$baseUrl/places/autocomplete');
-
+    // 1. Fetch from backend with destination context
+    List<CitySuggestion> backendSuggestions = [];
     try {
+      final baseUrl = await getBaseUrl();
+      final url = Uri.parse('$baseUrl/places/autocomplete');
+
       final response = await http
           .post(
             url,
@@ -68,14 +109,16 @@ class TripApi {
               'query': cleanQ,
               'types': types,
               'session_token': sessionToken,
+              if (destination != null && destination.trim().isNotEmpty)
+                'destination': destination.trim(),
             }),
           )
-          .timeout(const Duration(seconds: 8));
+          .timeout(const Duration(seconds: 4));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final rawList = data['suggestions'] as List? ?? [];
-        return rawList
+        backendSuggestions = rawList
             .map((e) => CitySuggestion.fromJson(Map<String, dynamic>.from(e)))
             .toList();
       }
@@ -83,13 +126,91 @@ class TripApi {
       debugPrint('Autocomplete HTTP note: $e');
     }
 
-    // Graceful offline fallback
+    // 2. Handling LODGING / HOTEL search
+    if (types == 'lodging') {
+      if (backendSuggestions.isNotEmpty) {
+        return backendSuggestions;
+      }
+
+      // Direct OpenStreetMap Nominatim fallback if backend didn't return
+      try {
+        final destSuffix = (destination != null && destination.trim().isNotEmpty)
+            ? ' ${destination.trim()}'
+            : '';
+        final osmQuery = Uri.encodeComponent('$cleanQ$destSuffix Karnataka');
+        final osmUrl = Uri.parse(
+          'https://nominatim.openstreetmap.org/search?q=$osmQuery&format=json&limit=8&countrycodes=in',
+        );
+        final res = await http.get(
+          osmUrl,
+          headers: {'User-Agent': 'NextiTravelCompanion/1.0 (hotel search)'},
+        ).timeout(const Duration(seconds: 3));
+
+        if (res.statusCode == 200) {
+          final List list = jsonDecode(res.body);
+          final osmSuggestions = <CitySuggestion>[];
+          for (final item in list) {
+            final dispName = item['display_name']?.toString() ?? '';
+            final lat = double.tryParse(item['lat']?.toString() ?? '') ?? 0.0;
+            final lng = double.tryParse(item['lon']?.toString() ?? '') ?? 0.0;
+            final shortName = dispName.split(',').first.trim();
+            final slug = shortName.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
+            final pid = 'osm_${lat.toStringAsFixed(5)}_${lng.toStringAsFixed(5)}_$slug';
+            osmSuggestions.add(CitySuggestion(description: dispName, placeId: pid));
+          }
+          if (osmSuggestions.isNotEmpty) {
+            return osmSuggestions;
+          }
+        }
+      } catch (_) {}
+
+      // Clean fallback if no hotels found
+      final destLabel = (destination != null && destination.trim().isNotEmpty)
+          ? '$destination, Karnataka, India'
+          : 'Karnataka, India';
+      return [
+        CitySuggestion(
+          description: '$cleanQ Stay, $destLabel',
+          placeId: 'hotel_${cleanQ.toLowerCase().replaceAll(' ', '_')}',
+        ),
+      ];
+    }
+
+    // 3. Handling CITIES / GEOCODE search
+    final localMatches = KarnatakaPlacesRegistry.searchSuggestions(cleanQ, limit: 25);
+    final Set<String> seenIds = {};
+    final List<CitySuggestion> merged = [];
+
+    // Prioritize local prefix matches from Karnataka registry
+    for (final s in localMatches) {
+      if (!seenIds.contains(s.placeId)) {
+        merged.add(s);
+        seenIds.add(s.placeId);
+      }
+    }
+
+    // Append unique backend / OSM suggestions
+    for (final s in backendSuggestions) {
+      final normDesc = s.description.toLowerCase();
+      final isDup = merged.any(
+        (m) => m.description.toLowerCase().split(',').first.trim() == normDesc.split(',').first.trim(),
+      );
+      if (!seenIds.contains(s.placeId) && !isDup) {
+        merged.add(s);
+        seenIds.add(s.placeId);
+      }
+    }
+
+    if (merged.isNotEmpty) {
+      return merged;
+    }
+
+    // Graceful fallback
     return [
-      CitySuggestion(description: '$cleanQ, Karnataka, India', placeId: 'city_${cleanQ.toLowerCase()}'),
-      CitySuggestion(description: 'Shimoga, Karnataka, India', placeId: 'city_shimoga'),
-      CitySuggestion(description: 'Coorg, Karnataka, India', placeId: 'city_coorg'),
-      CitySuggestion(description: 'Hampi, Karnataka, India', placeId: 'city_hampi'),
-      CitySuggestion(description: 'Mysuru, Karnataka, India', placeId: 'city_mysuru'),
+      CitySuggestion(
+        description: '$cleanQ, Karnataka, India',
+        placeId: 'city_${cleanQ.toLowerCase().replaceAll(' ', '_')}',
+      ),
     ];
   }
 
@@ -153,13 +274,38 @@ class TripApi {
       debugPrint('Resolve City HTTP note: $e');
     }
 
+    // 1. Instant accurate coordinate decoding from osm_{lat}_{lng}_{slug}
+    if (placeId.startsWith('osm_')) {
+      final parts = placeId.split('_');
+      if (parts.length >= 3) {
+        final parsedLat = double.tryParse(parts[1]);
+        final parsedLng = double.tryParse(parts[2]);
+        if (parsedLat != null && parsedLng != null) {
+          final slug = parts.length > 3 ? parts.sublist(3).join(' ') : 'Place';
+          return CityResolution(
+            name: slug,
+            placeId: placeId,
+            lat: parsedLat,
+            lng: parsedLng,
+            formattedAddress: '$slug, Karnataka, India',
+          );
+        }
+      }
+    }
+
+    // 2. Instant accurate coordinate lookup from comprehensive Karnataka registry
+    final localResolved = KarnatakaPlacesRegistry.resolvePlace(placeId);
+    if (localResolved != null) {
+      return localResolved;
+    }
+
     // Fallback coordinates for Karnataka
     return CityResolution(
-      name: placeId.replaceAll('city_', '').replaceAll('_', ' '),
+      name: placeId.replaceAll('city_', '').replaceAll('hotel_', '').replaceAll('_', ' '),
       placeId: placeId,
-      lat: 13.9299,
-      lng: 75.5681,
-      formattedAddress: 'Karnataka, India',
+      lat: 12.4244,
+      lng: 75.7382,
+      formattedAddress: '${placeId.replaceAll('city_', '').replaceAll('hotel_', '').replaceAll('_', ' ')}, Karnataka, India',
     );
   }
 
@@ -174,6 +320,14 @@ class TripApi {
     double radiusKm = 70.0,
     String? sessionToken,
   }) async {
+    // Client-side cache: return immediately on repeat visits
+    final cacheKey =
+        '${city.toLowerCase().trim()}|${(lat ?? 0).toStringAsFixed(1)}|${(lng ?? 0).toStringAsFixed(1)}';
+    if (_discoverCache.containsKey(cacheKey)) {
+      debugPrint('Discover cache HIT for $city — returning instantly');
+      return _discoverCache[cacheKey]!;
+    }
+
     final baseUrl = await getBaseUrl();
     final url = Uri.parse('$baseUrl/discover');
 
@@ -191,18 +345,26 @@ class TripApi {
               'session_token': sessionToken,
             }),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(const Duration(seconds: 30)); // increased from 15s
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        return DiscoverResponse.fromJson(data);
+        final result = DiscoverResponse.fromJson(data);
+        _discoverCache[cacheKey] = result; // cache for this session
+        return result;
       }
     } catch (e) {
-      debugPrint('Discover Places HTTP note: $e');
+      debugPrint('Discover Places HTTP note: \$e');
     }
 
     // Fallback response with the 5 required categories
-    return _buildFallbackDiscoverResponse(tripId, city, lat ?? 13.9299, lng ?? 75.5681);
+    return _buildFallbackDiscoverResponse(
+      tripId,
+      city,
+      lat ?? 13.9299,
+      lng ?? 75.5681,
+      radiusKm: radiusKm,
+    );
   }
 
   // --------------------------------------------------------------------
@@ -212,6 +374,8 @@ class TripApi {
     required String tripId,
     required List<String> dates,
     required List<String> selectedIds,
+    List<String>? selectedNames,
+    List<PlaceCard>? availablePlaces,
     String start = 'Starting Point',
     String? hotel,
     String? end,
@@ -220,6 +384,9 @@ class TripApi {
   }) async {
     final baseUrl = await getBaseUrl();
     final url = Uri.parse('$baseUrl/plan');
+
+    final resolvedHotel = hotel ?? '${start.replaceAll('Start:', '').trim()} Hotel';
+    final resolvedEnd = end ?? resolvedHotel;
 
     try {
       final response = await http
@@ -230,14 +397,15 @@ class TripApi {
               'trip_id': tripId,
               'dates': dates,
               'selected_ids': selectedIds,
+              'selected_names': selectedNames,
               'start': start,
-              'hotel': hotel,
-              'end': end ?? hotel ?? start,
+              'hotel': resolvedHotel,
+              'end': resolvedEnd,
               'travel_mode': travelMode,
               'session_token': sessionToken,
             }),
           )
-          .timeout(const Duration(seconds: 25));
+          .timeout(const Duration(seconds: 40));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -248,8 +416,17 @@ class TripApi {
     }
 
     // Fallback programmatic schedule if network unavailable
-    final resolvedEnd = end ?? hotel ?? start;
-    return _buildFallbackItineraryPlan(tripId, dates, selectedIds, start, resolvedEnd, travelMode);
+    return _buildFallbackItineraryPlan(
+      tripId: tripId,
+      dates: dates,
+      selectedIds: selectedIds,
+      selectedNames: selectedNames,
+      availablePlaces: availablePlaces,
+      start: start,
+      hotel: resolvedHotel,
+      end: resolvedEnd,
+      travelMode: travelMode,
+    );
   }
 
   // --------------------------------------------------------------------
@@ -259,210 +436,179 @@ class TripApi {
     String tripId,
     String city,
     double lat,
-    double lng,
-  ) {
-    final places = [
-      PlaceCard(
-        placeId: 'loc_adv_1',
-        name: '$city Mountain Peak Trek',
-        types: ['trekking', 'adventure'],
-        lat: lat + 0.12,
-        lng: lng + 0.15,
-        rating: 4.8,
-        userRatingsTotal: 340,
-        address: 'Western Ghats, near $city',
-        distanceKm: 28.5,
-        category: 'Adventure',
-      ),
-      PlaceCard(
-        placeId: 'loc_adv_2',
-        name: '$city River Rafting Rapids',
-        types: ['water_sports', 'adventure'],
-        lat: lat - 0.08,
-        lng: lng + 0.22,
-        rating: 4.7,
-        userRatingsTotal: 510,
-        address: 'River Valley, near $city',
-        distanceKm: 34.0,
-        category: 'Adventure',
-      ),
-      PlaceCard(
-        placeId: 'loc_food_1',
-        name: 'Gandhi Bazaar Traditional Sweets & Thali',
-        types: ['restaurant', 'food'],
-        lat: lat + 0.01,
-        lng: lng + 0.01,
-        rating: 4.6,
-        userRatingsTotal: 820,
-        address: 'Main Market, $city',
-        distanceKm: 1.8,
-        category: 'Food',
-      ),
-      PlaceCard(
-        placeId: 'loc_food_2',
-        name: 'Hotel Heritage Authentic Cuisine',
-        types: ['restaurant', 'food'],
-        lat: lat - 0.02,
-        lng: lng - 0.01,
-        rating: 4.5,
-        userRatingsTotal: 620,
-        address: 'Station Road, $city',
-        distanceKm: 2.5,
-        category: 'Food',
-      ),
-      PlaceCard(
-        placeId: 'loc_nat_1',
-        name: 'Cascade Forest Waterfall',
-        types: ['waterfall', 'nature'],
-        lat: lat + 0.25,
-        lng: lng - 0.18,
-        rating: 4.9,
-        userRatingsTotal: 1200,
-        address: 'National Reserve, near $city',
-        distanceKm: 42.0,
-        category: 'Nature',
-      ),
-      PlaceCard(
-        placeId: 'loc_nat_2',
-        name: 'Wildlife Sanctuary & Lake Trail',
-        types: ['sanctuary', 'nature'],
-        lat: lat - 0.15,
-        lng: lng - 0.20,
-        rating: 4.6,
-        userRatingsTotal: 490,
-        address: 'Forest Range, near $city',
-        distanceKm: 31.0,
-        category: 'Nature',
-      ),
-      PlaceCard(
-        placeId: 'loc_cul_1',
-        name: 'Ancient Rameshwara Heritage Temple',
-        types: ['hindu_temple', 'culture'],
-        lat: lat + 0.18,
-        lng: lng + 0.05,
-        rating: 4.8,
-        userRatingsTotal: 950,
-        address: 'Historic Quarter, near $city',
-        distanceKm: 22.0,
-        category: 'Culture',
-      ),
-      PlaceCard(
-        placeId: 'loc_cul_2',
-        name: 'Royal Palace & Fortification',
-        types: ['historic_site', 'culture'],
-        lat: lat - 0.22,
-        lng: lng + 0.10,
-        rating: 4.7,
-        userRatingsTotal: 780,
-        address: 'Hilltop Fort, near $city',
-        distanceKm: 38.0,
-        category: 'Culture',
-      ),
-      PlaceCard(
-        placeId: 'loc_sight_1',
-        name: 'Panoramic Valley Sunset Lookout',
-        types: ['scenic_view', 'sightseeing'],
-        lat: lat + 0.35,
-        lng: lng - 0.10,
-        rating: 4.8,
-        userRatingsTotal: 1400,
-        address: 'High Peak Point, near $city',
-        distanceKm: 52.0,
-        category: 'Sightseeing',
-      ),
-      PlaceCard(
-        placeId: 'loc_sight_2',
-        name: 'City Central Square & Dam Garden',
-        types: ['tourist_attraction', 'sightseeing'],
-        lat: lat + 0.05,
-        lng: lng - 0.04,
-        rating: 4.4,
-        userRatingsTotal: 650,
-        address: 'River Reservoir, near $city',
-        distanceKm: 12.0,
-        category: 'Sightseeing',
-      ),
-    ];
-
-    final categories = {
-      'Adventure': ['loc_adv_1', 'loc_adv_2'],
-      'Food': ['loc_food_1', 'loc_food_2'],
-      'Nature': ['loc_nat_1', 'loc_nat_2'],
-      'Culture': ['loc_cul_1', 'loc_cul_2'],
-      'Sightseeing': ['loc_sight_1', 'loc_sight_2'],
-    };
-
-    return DiscoverResponse(
+    double lng, {
+    double radiusKm = 70.0,
+  }) {
+    return KarnatakaPlacesRegistry.getDiscoverResponseForCity(
       tripId: tripId,
-      city: city,
-      radiusKm: 70.0,
-      totalPlaces: places.length,
-      categories: categories,
-      places: places,
+      destination: city,
+      centerLat: lat,
+      centerLng: lng,
+      radiusKm: radiusKm,
     );
   }
 
-  static ItineraryPlan _buildFallbackItineraryPlan(
-    String tripId,
-    List<String> dates,
-    List<String> selectedIds,
-    String start,
-    String end,
-    String travelMode,
-  ) {
+  static ItineraryPlan _buildFallbackItineraryPlan({
+    required String tripId,
+    required List<String> dates,
+    required List<String> selectedIds,
+    List<String>? selectedNames,
+    List<PlaceCard>? availablePlaces,
+    required String start,
+    required String hotel,
+    required String end,
+    required String travelMode,
+  }) {
     final safeDates = dates.isNotEmpty ? dates : ['Day 1'];
     final List<DailySchedule> days = [];
 
-    for (int i = 0; i < safeDates.length; i++) {
-      days.append(
-        DailySchedule(
-          dayNumber: i + 1,
-          date: safeDates[i],
-          summary: 'Day ${i + 1}: Exploration & Local Experience',
-          stops: [
+    // 1. Gather human-readable explicit place names
+    final List<String> resolvedNames = [];
+    if (selectedNames != null && selectedNames.isNotEmpty) {
+      resolvedNames.addAll(selectedNames.where((n) => n.trim().isNotEmpty));
+    } else if (availablePlaces != null && availablePlaces.isNotEmpty) {
+      resolvedNames.addAll(availablePlaces.map((p) => p.name));
+    } else {
+      for (final id in selectedIds) {
+        if (!id.startsWith('stop_') && !id.startsWith('place_') && id.trim().isNotEmpty) {
+          resolvedNames.add(id.replaceAll('local_', '').replaceAll('_', ' ').trim());
+        }
+      }
+    }
+
+    if (resolvedNames.isEmpty) {
+      resolvedNames.addAll([
+        'City Heritage Center',
+        'Scenic Nature Lake & Park',
+        'Historic Monument & Viewpoint',
+        'Botanical Gardens & Reserve',
+      ]);
+    }
+
+    // 2. Distribute places across the days
+    final numDays = safeDates.length;
+    final List<List<String>> stopsByDay = List.generate(numDays, (_) => []);
+    for (int i = 0; i < resolvedNames.length; i++) {
+      stopsByDay[i % numDays].add(resolvedNames[i]);
+    }
+
+    for (int i = 0; i < numDays; i++) {
+      final dayNumber = i + 1;
+      final dateStr = safeDates[i];
+      final dayStops = stopsByDay[i];
+
+      // Day 1 starts from user's starting point; Day 2+ starts from hotel!
+      final dayStartPoint = (dayNumber == 1) ? start : hotel;
+      final List<DailyScheduleStop> scheduleStops = [];
+
+      // Morning Start (6:00 AM)
+      scheduleStops.add(
+        DailyScheduleStop(
+          time: '06:00 AM',
+          placeId: 'start_point',
+          name: 'Start: $dayStartPoint',
+          activityType: 'start',
+          durationMinutes: 15,
+          travelToNextMinutes: 30,
+          openingHours: ['Open 24/7'],
+          notes: 'Depart by $travelMode',
+        ),
+      );
+
+      // Morning Stop 1 (07:00 AM)
+      if (dayStops.isNotEmpty) {
+        scheduleStops.add(
+          DailyScheduleStop(
+            time: '07:00 AM',
+            placeId: 'stop_${i}_0',
+            name: dayStops[0],
+            activityType: 'visit',
+            durationMinutes: 90,
+            travelToNextMinutes: 25,
+            openingHours: ['06:00 AM – 06:00 PM'],
+            notes: 'Explore landmarks & capture photos',
+          ),
+        );
+      }
+
+      // Morning Stop 2 (09:30 AM) if available
+      if (dayStops.length > 1) {
+        scheduleStops.add(
+          DailyScheduleStop(
+            time: '09:30 AM',
+            placeId: 'stop_${i}_1',
+            name: dayStops[1],
+            activityType: 'visit',
+            durationMinutes: 90,
+            travelToNextMinutes: 25,
+            openingHours: ['08:00 AM – 06:00 PM'],
+            notes: 'Sightseeing and local cultural tour',
+          ),
+        );
+      }
+
+      // Lunch Break (01:00 PM)
+      scheduleStops.add(
+        DailyScheduleStop(
+          time: '01:00 PM',
+          placeId: 'lunch_break',
+          name: 'Lunch Break & Refreshment',
+          activityType: 'meal',
+          durationMinutes: 60,
+          travelToNextMinutes: 20,
+          openingHours: ['11:30 AM – 10:30 PM'],
+          notes: 'Authentic regional dining & refreshment',
+        ),
+      );
+
+      // Afternoon Stop 3+ (02:30 PM onwards)
+      if (dayStops.length > 2) {
+        for (int sIdx = 2; sIdx < dayStops.length; sIdx++) {
+          final pName = dayStops[sIdx];
+          final hour = 2 + (sIdx - 2) * 2;
+          final timeStr = '${hour.toString().padLeft(2, '0')}:30 PM';
+          scheduleStops.add(
             DailyScheduleStop(
-              time: '09:00 AM',
-              placeId: 'start_point',
-              name: 'Start: $start',
-              activityType: 'start',
-              durationMinutes: 15,
-              travelToNextMinutes: 20,
-              openingHours: ['Open 24/7'],
-              notes: 'Depart by $travelMode',
-            ),
-            DailyScheduleStop(
-              time: '09:35 AM',
-              placeId: selectedIds.isNotEmpty ? selectedIds[i % selectedIds.length] : 'stop_1',
-              name: 'Selected Attraction Stop',
+              time: timeStr,
+              placeId: 'stop_${i}_$sIdx',
+              name: pName,
               activityType: 'visit',
               durationMinutes: 90,
-              travelToNextMinutes: 15,
-              openingHours: ['09:00 AM – 06:00 PM'],
-              notes: 'Explore landmarks & capture photos',
+              travelToNextMinutes: 25,
+              openingHours: ['09:00 AM – 07:00 PM'],
+              notes: 'Scenic exploration & photography',
             ),
-            DailyScheduleStop(
-              time: '01:00 PM',
-              placeId: 'lunch_break',
-              name: 'Lunch Break & Refreshment',
-              activityType: 'meal',
-              durationMinutes: 60,
-              travelToNextMinutes: 15,
-              openingHours: ['11:30 AM – 10:30 PM'],
-              notes: 'Authentic local dining',
-            ),
-            DailyScheduleStop(
-              time: '06:00 PM',
-              placeId: 'end_point',
-              name: 'End: $end',
-              activityType: 'end',
-              durationMinutes: 0,
-              travelToNextMinutes: 0,
-              openingHours: ['Open 24/7'],
-              notes: 'Return to resting location',
-            ),
-          ],
-          dailyTotalTravelMinutes: 50,
-          dailyTotalDistanceKm: 24.5,
+          );
+        }
+      }
+
+      // Night Arrival at Hotel with 6-Hour Sleep Schedule
+      final finalTimeStr = (numDays > 1) ? '12:00 AM' : '08:00 PM';
+      final finalNotes = (numDays > 1)
+          ? 'Route to hotel stay (6-hour sleep schedule: 12:00 AM – 06:00 AM)'
+          : 'Return to resting location';
+
+      scheduleStops.add(
+        DailyScheduleStop(
+          time: finalTimeStr,
+          placeId: 'end_point',
+          name: 'End: $hotel',
+          activityType: 'end',
+          durationMinutes: 0,
+          travelToNextMinutes: 0,
+          openingHours: ['Open 24/7'],
+          notes: finalNotes,
+        ),
+      );
+
+      days.add(
+        DailySchedule(
+          dayNumber: dayNumber,
+          date: dateStr,
+          summary: 'Day $dayNumber: ${dayStops.isNotEmpty ? dayStops.take(2).join(' & ') : "Exploration & Local Sights"}',
+          stops: scheduleStops,
+          dailyTotalTravelMinutes: 65,
+          dailyTotalDistanceKm: 32.0,
         ),
       );
     }
@@ -471,7 +617,7 @@ class TripApi {
       tripId: tripId,
       travelMode: travelMode,
       startPoint: start,
-      endPoint: end,
+      endPoint: hotel,
       days: days,
       unfittedStops: [],
       warnings: [],
@@ -484,8 +630,3 @@ class TripApi {
   }
 }
 
-extension on List<DailySchedule> {
-  void append(DailySchedule dailySchedule) {
-    add(dailySchedule);
-  }
-}

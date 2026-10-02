@@ -10,6 +10,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'trip_details_screen.dart';
 import '../trip_qr_screen.dart';
 import '../services/trip_api.dart';
+import '../services/karnataka_places.dart';
 import '../models/trip_plan_models.dart';
 import '../widgets/hotel_map_picker.dart';
 
@@ -112,6 +113,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   final List<String> _selectedPlaces = [];
   Map<String, List<String>> _suggestedPlaces = {};
   bool _isLoadingPlaces = false;
+  bool _isFetchingPlaces = false; // prevents concurrent duplicate fetches
   String _lastFetchedDestination = '';
   
   late bool _isHost;
@@ -119,6 +121,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _tripSubscription;
   Set<String> _groupPlaces = {};
+  Map<String, int> _groupPickCounts = {}; // how many OTHER members picked each place
   int _approvedMemberCount = 1;
   final Set<String> _pendingRequestIdsHandled = {};
   bool _isShowingApprovalDialog = false;
@@ -205,6 +208,31 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       final user = FirebaseAuth.instance.currentUser;
       final docRef = FirebaseFirestore.instance.collection('trips').doc(_tripCode);
 
+      final allPlacesToSync = <String>{..._groupPlaces, ..._selectedPlaces}.toList();
+      final destName = _destinationController.text.trim();
+      final Map<String, dynamic> placeCoordsToSync = {};
+      if (_discoverData != null) {
+        for (var p in _discoverData!.places) {
+          if (p.lat != 0.0 || p.lng != 0.0) {
+            placeCoordsToSync[p.name] = {
+              'lat': p.lat,
+              'lng': p.lng,
+            };
+          }
+        }
+      }
+      for (var place in allPlacesToSync) {
+        if (!placeCoordsToSync.containsKey(place)) {
+          final coord = KarnatakaPlacesRegistry.findPlaceCoordinate(place, destination: destName);
+          if (coord != null) {
+            placeCoordsToSync[place] = {
+              'lat': coord.lat,
+              'lng': coord.lng,
+            };
+          }
+        }
+      }
+
       final Map<String, dynamic> updateData = {
         'tripCode': _tripCode,
         'tripName': _tripNameController.text.trim().isNotEmpty
@@ -226,6 +254,13 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         'updatedAt': FieldValue.serverTimestamp(),
       };
 
+      if (allPlacesToSync.isNotEmpty) {
+        updateData['places'] = allPlacesToSync;
+      }
+      if (placeCoordsToSync.isNotEmpty) {
+        updateData['placeCoordinates'] = placeCoordsToSync;
+      }
+
       if (isInitial && _isHost) {
         updateData['hostUid'] = user?.uid ?? 'host';
         updateData['hostName'] = user?.displayName ?? (user?.email?.split('@').first ?? 'Host');
@@ -241,7 +276,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         ];
         updateData['pendingRequests'] = [];
         updateData['memberPreferences'] = {};
-        updateData['places'] = _selectedPlaces;
+        updateData['places'] = allPlacesToSync.isNotEmpty ? allPlacesToSync : _selectedPlaces;
       }
 
       await docRef.set(updateData, SetOptions(merge: true));
@@ -278,25 +313,36 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       if (!snapshot.exists || snapshot.data() == null) return;
       final data = snapshot.data()!;
 
-      // 1. Gather group preferences from all members
+      // 1. Gather group preferences from OTHER members only
+      //    (exclude current user's own picks to avoid false "Group Pick" labels)
+      final String currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+
+      final Map<String, int> pickCounts = {}; // place -> count of OTHER members who picked it
       final Set<String> groupPlaces = {};
       final memberPrefs = data['memberPreferences'] as Map<String, dynamic>?;
       if (memberPrefs != null) {
-        for (final userPlaces in memberPrefs.values) {
+        for (final entry in memberPrefs.entries) {
+          final memberUid = entry.key;
+          if (memberUid == currentUid) continue; // skip own selections
+          final userPlaces = entry.value;
           if (userPlaces is List) {
-            groupPlaces.addAll(userPlaces.map((e) => e.toString()));
+            for (final p in userPlaces) {
+              final name = p.toString();
+              groupPlaces.add(name);
+              pickCounts[name] = (pickCounts[name] ?? 0) + 1;
+            }
           }
         }
       }
-      if (data['places'] is List) {
-        groupPlaces.addAll((data['places'] as List).map((e) => e.toString()));
-      }
+      // NOTE: intentionally NOT using data['places'] (arrayUnion) because it
+      // never shrinks and would show stale badges after deselection.
 
       final approved = (data['approvedMembers'] as List?) ?? [];
 
       if (mounted) {
         setState(() {
           _groupPlaces = groupPlaces;
+          _groupPickCounts = pickCounts;
           _approvedMemberCount = approved.isNotEmpty ? approved.length : 1;
 
           // If participant, ensure destination & groupSize mirror the host's exact values
@@ -689,7 +735,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   void _onStartPointChanged(String query) {
     _startPointDebounce?.cancel();
     final clean = query.trim();
-    if (clean.length < 2) {
+    if (clean.isEmpty) {
       setState(() {
         _startPointSuggestions = [];
         _isSearchingStartPoint = false;
@@ -701,7 +747,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       _isSearchingStartPoint = true;
     });
 
-    _startPointDebounce = Timer(const Duration(milliseconds: 350), () async {
+    _startPointDebounce = Timer(const Duration(milliseconds: 150), () async {
       try {
         final suggestions = await TripApi.autocompleteCity(clean, types: 'geocode');
         if (mounted) {
@@ -723,7 +769,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   void _onHotelChanged(String query) {
     _hotelDebounce?.cancel();
     final clean = query.trim();
-    if (clean.length < 2) {
+    if (clean.isEmpty) {
       setState(() {
         _hotelSuggestions = [];
         _isSearchingHotel = false;
@@ -735,9 +781,14 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       _isSearchingHotel = true;
     });
 
-    _hotelDebounce = Timer(const Duration(milliseconds: 350), () async {
+    _hotelDebounce = Timer(const Duration(milliseconds: 150), () async {
       try {
-        final suggestions = await TripApi.autocompleteCity(clean, types: 'lodging');
+        final dest = _destinationController.text.trim();
+        final suggestions = await TripApi.autocompleteCity(
+          clean,
+          types: 'lodging',
+          destination: dest,
+        );
         if (mounted) {
           setState(() {
             _hotelSuggestions = suggestions;
@@ -755,11 +806,12 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   }
 
   Future<void> _openHotelMapPicker() async {
-    final destLat = _selectedCityLat ?? 13.9299;
-    final destLng = _selectedCityLng ?? 75.5681;
     final destName = _destinationController.text.trim().isNotEmpty
         ? _destinationController.text.trim()
-        : 'Destination';
+        : 'Coorg';
+    final resolvedDest = KarnatakaPlacesRegistry.resolvePlace(destName);
+    final destLat = _selectedCityLat ?? resolvedDest?.lat ?? 12.4244;
+    final destLng = _selectedCityLng ?? resolvedDest?.lng ?? 75.7382;
 
     final result = await Navigator.push<HotelPickResult>(
       context,
@@ -792,7 +844,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   void _onCityChanged(String query) {
     _cityDebounce?.cancel();
     final clean = query.trim();
-    if (clean.length < 2) {
+    if (clean.isEmpty) {
       setState(() {
         _citySuggestions = [];
         _isSearchingCity = false;
@@ -804,7 +856,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       _isSearchingCity = true;
     });
 
-    _cityDebounce = Timer(const Duration(milliseconds: 350), () async {
+    _cityDebounce = Timer(const Duration(milliseconds: 150), () async {
       try {
         final suggestions = await TripApi.autocompleteCity(clean);
         if (mounted) {
@@ -851,7 +903,9 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   Future<void> _fetchPlacesViaBackend(String destination) async {
     if (destination.isEmpty) return;
     if (destination == _lastFetchedDestination && _suggestedPlaces.isNotEmpty) return;
+    if (_isFetchingPlaces) return; // already in flight — skip duplicate call
 
+    _isFetchingPlaces = true;
     setState(() {
       _isLoadingPlaces = true;
       _suggestedPlaces = {};
@@ -874,41 +928,85 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         final catName = entry.key;
         final pNames = entry.value
             .map((pid) => placeMap[pid] ?? pid.replaceFirst('local_', '').replaceAll('_', ' ').toUpperCase())
+            .where((name) => name.isNotEmpty)
             .toList();
         if (pNames.isNotEmpty) {
           mapped[catName] = pNames;
         }
       }
 
+      // If backend returned empty categories, use curated Karnataka places
+      if (mapped.isEmpty) {
+        final fallbackResp = KarnatakaPlacesRegistry.getDiscoverResponseForCity(
+          tripId: _tripCode,
+          destination: destination,
+          centerLat: _selectedCityLat,
+          centerLng: _selectedCityLng,
+          radiusKm: 70.0,
+        );
+        final fbPlaceMap = {for (var p in fallbackResp.places) p.placeId: p.name};
+        for (var entry in fallbackResp.categories.entries) {
+          final catName = entry.key;
+          final pNames = entry.value
+              .map((pid) => fbPlaceMap[pid] ?? pid)
+              .where((name) => name.isNotEmpty)
+              .toList();
+          if (pNames.isNotEmpty) {
+            mapped[catName] = pNames;
+          }
+        }
+      }
+
       if (mounted) {
         setState(() {
-          _discoverData = response;
-          _suggestedPlaces = mapped.isNotEmpty
-              ? mapped
-              : {
-                  'Adventure': ['Mountain Peak Trek', 'River Rafting Rapids'],
-                  'Food': ['Traditional Sweets & Thali', 'Authentic Heritage Cuisine'],
-                  'Nature': ['Cascade Forest Waterfall', 'Wildlife Sanctuary Trail'],
-                  'Culture': ['Ancient Heritage Temple', 'Royal Fortification & Palace'],
-                  'Sightseeing': ['Panoramic Sunset Lookout', 'City Central Square'],
-                };
+          _discoverData = response.places.isNotEmpty
+              ? response
+              : KarnatakaPlacesRegistry.getDiscoverResponseForCity(
+                  tripId: _tripCode,
+                  destination: destination,
+                  centerLat: _selectedCityLat,
+                  centerLng: _selectedCityLng,
+                  radiusKm: 70.0,
+                );
+          _suggestedPlaces = mapped;
           _lastFetchedDestination = destination;
           _isLoadingPlaces = false;
+          _isFetchingPlaces = false;
         });
+      } else {
+        _isFetchingPlaces = false;
       }
     } catch (e) {
       debugPrint('Error discovering places via backend: $e');
+      final fallbackResp = KarnatakaPlacesRegistry.getDiscoverResponseForCity(
+        tripId: _tripCode,
+        destination: destination,
+        centerLat: _selectedCityLat,
+        centerLng: _selectedCityLng,
+        radiusKm: 70.0,
+      );
+      final Map<String, List<String>> mapped = {};
+      final fbPlaceMap = {for (var p in fallbackResp.places) p.placeId: p.name};
+      for (var entry in fallbackResp.categories.entries) {
+        final catName = entry.key;
+        final pNames = entry.value
+            .map((pid) => fbPlaceMap[pid] ?? pid)
+            .where((name) => name.isNotEmpty)
+            .toList();
+        if (pNames.isNotEmpty) {
+          mapped[catName] = pNames;
+        }
+      }
       if (mounted) {
         setState(() {
           _isLoadingPlaces = false;
-          _suggestedPlaces = {
-            'Adventure': ['Mountain Peak Trek', 'River Rafting'],
-            'Food': ['Local Cuisine & Sweets', 'Heritage Dining'],
-            'Nature': ['Botanical Gardens', 'Lake Nature Trail'],
-            'Culture': ['Historic Fort', 'Ancient Temple'],
-            'Sightseeing': ['Sunset Viewpoint', 'City Center'],
-          };
+          _isFetchingPlaces = false;
+          _discoverData = fallbackResp;
+          _suggestedPlaces = mapped;
+          _lastFetchedDestination = destination;
         });
+      } else {
+        _isFetchingPlaces = false;
       }
     }
   }
@@ -916,7 +1014,21 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   Future<void> _generateItineraryViaBackend() async {
     final allCombinedPlaces = <String>{..._groupPlaces, ..._selectedPlaces}.toList();
     if (allCombinedPlaces.isEmpty) {
-      allCombinedPlaces.addAll(['Mountain Peak Trek', 'Ancient Temple', 'Sunset Viewpoint']);
+      if (_discoverData != null && _discoverData!.places.isNotEmpty) {
+        allCombinedPlaces.addAll(_discoverData!.places.take(5).map((p) => p.name));
+      } else {
+        final dest = _destinationController.text.trim();
+        final curated = KarnatakaPlacesRegistry.getCuratedAttractions(dest);
+        if (curated.isNotEmpty) {
+          allCombinedPlaces.addAll(curated.take(5).map((p) => p.name));
+        } else {
+          allCombinedPlaces.addAll([
+            if (dest.isNotEmpty) '$dest Landmark' else 'Historic Quarter',
+            if (dest.isNotEmpty) '$dest Nature Viewpoint' else 'Scenic Nature Reserve',
+            if (dest.isNotEmpty) '$dest Cultural Site' else 'Cultural Heritage Site',
+          ]);
+        }
+      }
     }
 
     List<String> datesList = [];
@@ -937,10 +1049,12 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
     // Map place names to IDs if available
     List<String> selectedIds = [];
+    List<PlaceCard> selectedPlaceCards = [];
     if (_discoverData != null) {
       for (var p in _discoverData!.places) {
         if (allCombinedPlaces.contains(p.name)) {
           selectedIds.add(p.placeId);
+          selectedPlaceCards.add(p);
         }
       }
     }
@@ -953,6 +1067,8 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         tripId: _tripCode,
         dates: datesList,
         selectedIds: selectedIds,
+        selectedNames: allCombinedPlaces,
+        availablePlaces: selectedPlaceCards.isNotEmpty ? selectedPlaceCards : _discoverData?.places,
         start: _startPointController.text.trim().isNotEmpty
             ? _startPointController.text.trim()
             : 'Starting Point',
@@ -961,7 +1077,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             : '${_destinationController.text.trim()} Hotel',
         end: _hotelController.text.trim().isNotEmpty
             ? _hotelController.text.trim()
-            : _destinationController.text.trim(),
+            : '${_destinationController.text.trim()} Hotel',
         travelMode: _travelMode,
       );
 
@@ -1606,22 +1722,34 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                 ),
               ],
             ),
-            child: Column(
-              children: _citySuggestions.map((sugg) {
-                return ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.location_city_rounded, size: 18, color: Color(0xFF6366F1)),
-                  title: Text(
-                    sugg.description,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white : const Color(0xFF0F172A),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 280),
+              child: ListView.separated(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: _citySuggestions.length,
+                separatorBuilder: (context, index) => Divider(
+                  height: 1,
+                  thickness: 0.5,
+                  color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.08),
+                ),
+                itemBuilder: (context, index) {
+                  final sugg = _citySuggestions[index];
+                  return ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.location_city_rounded, size: 18, color: Color(0xFF6366F1)),
+                    title: Text(
+                      sugg.description,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: isDark ? Colors.white : const Color(0xFF0F172A),
+                      ),
                     ),
-                  ),
-                  onTap: () => _selectCitySuggestion(sugg),
-                );
-              }).toList(),
+                    onTap: () => _selectCitySuggestion(sugg),
+                  );
+                },
+              ),
             ),
           ),
         ],
@@ -1736,28 +1864,40 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                 ),
               ],
             ),
-            child: Column(
-              children: _startPointSuggestions.map((sugg) {
-                return ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.location_on_rounded, size: 18, color: Color(0xFF6366F1)),
-                  title: Text(
-                    sugg.description,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white : const Color(0xFF0F172A),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 260),
+              child: ListView.separated(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: _startPointSuggestions.length,
+                separatorBuilder: (context, index) => Divider(
+                  height: 1,
+                  thickness: 0.5,
+                  color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.08),
+                ),
+                itemBuilder: (context, index) {
+                  final sugg = _startPointSuggestions[index];
+                  return ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.location_on_rounded, size: 18, color: Color(0xFF6366F1)),
+                    title: Text(
+                      sugg.description,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: isDark ? Colors.white : const Color(0xFF0F172A),
+                      ),
                     ),
-                  ),
-                  onTap: () {
-                    setState(() {
-                      _startPointController.text = sugg.description;
-                      _startPointSuggestions = [];
-                      _isSearchingStartPoint = false;
-                    });
-                  },
-                );
-              }).toList(),
+                    onTap: () {
+                      setState(() {
+                        _startPointController.text = sugg.description;
+                        _startPointSuggestions = [];
+                        _isSearchingStartPoint = false;
+                      });
+                    },
+                  );
+                },
+              ),
             ),
           ),
         ],
@@ -1835,34 +1975,46 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                 ),
               ],
             ),
-            child: Column(
-              children: _hotelSuggestions.map((sugg) {
-                return ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.hotel_rounded, size: 18, color: Color(0xFF6366F1)),
-                  title: Text(
-                    sugg.description,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white : const Color(0xFF0F172A),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 260),
+              child: ListView.separated(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: _hotelSuggestions.length,
+                separatorBuilder: (context, index) => Divider(
+                  height: 1,
+                  thickness: 0.5,
+                  color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.08),
+                ),
+                itemBuilder: (context, index) {
+                  final sugg = _hotelSuggestions[index];
+                  return ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.hotel_rounded, size: 18, color: Color(0xFF6366F1)),
+                    title: Text(
+                      sugg.description,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: isDark ? Colors.white : const Color(0xFF0F172A),
+                      ),
                     ),
-                  ),
-                  onTap: () async {
-                    final cleanName = sugg.description.split(',').first.trim();
-                    setState(() {
-                      _hotelController.text = cleanName;
-                      _hotelSuggestions = [];
-                      _isSearchingHotel = false;
-                    });
-                    try {
-                      final res = await TripApi.resolveCity(sugg.placeId);
-                      _hotelLat = res.lat;
-                      _hotelLng = res.lng;
-                    } catch (_) {}
-                  },
-                );
-              }).toList(),
+                    onTap: () async {
+                      final cleanName = sugg.description.split(',').first.trim();
+                      setState(() {
+                        _hotelController.text = cleanName;
+                        _hotelSuggestions = [];
+                        _isSearchingHotel = false;
+                      });
+                      try {
+                        final res = await TripApi.resolveCity(sugg.placeId);
+                        _hotelLat = res.lat;
+                        _hotelLng = res.lng;
+                      } catch (_) {}
+                    },
+                  );
+                },
+              ),
             ),
           ),
         ],
@@ -2188,6 +2340,8 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                                                 ),
                                               ),
                                             ),
+                                            // Show "Group Pick" only when ≥1 OTHER member
+                                            // currently has this place selected.
                                             if (isSelectedByGroup && !isSelectedByMe)
                                               Container(
                                                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -2195,9 +2349,11 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                                                   color: const Color(0xFF6366F1).withValues(alpha: 0.15),
                                                   borderRadius: BorderRadius.circular(8),
                                                 ),
-                                                child: const Text(
-                                                  '👥 Group Pick',
-                                                  style: TextStyle(
+                                                child: Text(
+                                                  _groupPickCounts[place] != null && _groupPickCounts[place]! > 1
+                                                      ? '👥 ${_groupPickCounts[place]} picked'
+                                                      : '👥 Group Pick',
+                                                  style: const TextStyle(
                                                     fontSize: 10,
                                                     fontWeight: FontWeight.bold,
                                                     color: Color(0xFF6366F1),
@@ -2308,7 +2464,41 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     // Combine choices from everyone in the group and local selections into a unified set
     final allCombinedPlaces = <String>{..._groupPlaces, ..._selectedPlaces}.toList();
     if (allCombinedPlaces.isEmpty) {
-      allCombinedPlaces.addAll(['Mountain Peak Trek', 'Ancient Temple', 'Sunset Viewpoint']);
+      final dest = _destinationController.text.trim();
+      final curated = KarnatakaPlacesRegistry.getCuratedAttractions(dest);
+      if (curated.isNotEmpty) {
+        allCombinedPlaces.addAll(curated.take(5).map((p) => p.name));
+      } else {
+        allCombinedPlaces.addAll([
+          if (dest.isNotEmpty) '$dest Landmark' else 'Historic Quarter',
+          if (dest.isNotEmpty) '$dest Nature Viewpoint' else 'Scenic Nature Reserve',
+          if (dest.isNotEmpty) '$dest Cultural Site' else 'Cultural Heritage Site',
+        ]);
+      }
+    }
+
+    final destName = _destinationController.text.trim();
+    final Map<String, Map<String, double>> placeCoordinatesMap = {};
+    if (_discoverData != null) {
+      for (var p in _discoverData!.places) {
+        if (p.lat != 0.0 || p.lng != 0.0) {
+          placeCoordinatesMap[p.name] = {
+            'lat': p.lat,
+            'lng': p.lng,
+          };
+        }
+      }
+    }
+    for (var place in allCombinedPlaces) {
+      if (!placeCoordinatesMap.containsKey(place)) {
+        final coord = KarnatakaPlacesRegistry.findPlaceCoordinate(place, destination: destName);
+        if (coord != null) {
+          placeCoordinatesMap[place] = {
+            'lat': coord.lat,
+            'lng': coord.lng,
+          };
+        }
+      }
     }
 
     final previewTrip = {
@@ -2332,6 +2522,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       'travelMode': _travelMode,
       'itineraryPlan': _itineraryPlan?.toJson(),
       'places': allCombinedPlaces,
+      'placeCoordinates': placeCoordinatesMap,
       'memberCount': _approvedMemberCount,
     };
 

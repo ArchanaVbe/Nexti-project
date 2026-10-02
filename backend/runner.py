@@ -11,8 +11,9 @@ import asyncio
 import json
 import logging
 import os
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 
 env_path = Path(__file__).resolve().parent / ".env"
@@ -23,7 +24,6 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from agents import (
-    categorizer_agent,
     planner_agent,
     deterministic_categorize_places,
     build_daily_schedules_programmatic,
@@ -32,6 +32,14 @@ from tools import find_places, get_place_details, compute_route
 
 logger = logging.getLogger("trip_ai.runner")
 
+# ---------------------------------------------------------------------------
+# Server-side discover cache: avoids re-hitting Google Places + Gemini for the
+# same city within a 30-minute window.  Key = (city_lower, lat_1dp, lng_1dp).
+# ---------------------------------------------------------------------------
+_DISCOVER_CACHE: Dict[Tuple, Dict[str, Any]] = {}
+_CACHE_TTL_SEC = 1800  # 30 minutes
+
+
 # In-memory session service storing conversational state for active trips
 session_service = InMemorySessionService()
 
@@ -39,12 +47,6 @@ session_service = InMemorySessionService()
 planner_runner = Runner(
     app_name="trip_ai_planner",
     agent=planner_agent,
-    session_service=session_service,
-)
-
-categorizer_runner = Runner(
-    app_name="trip_ai_categorizer",
-    agent=categorizer_agent,
     session_service=session_service,
 )
 
@@ -60,74 +62,35 @@ async def run_discover_async(
     """Runs discovery within 70 km radius and groups candidate places into 5 categories:
     Adventure, Food, Nature, Culture, Sightseeing.
     """
-    # 1. Discover candidate places around center within 70 km radius
-    candidates = find_places(city, lat, lng, radius_km)
+    # -----------------------------------------------------------------------
+    # 1. Cache check — return immediately if we already processed this city
+    # -----------------------------------------------------------------------
+    cache_key = (city.lower().strip(), round(lat, 1), round(lng, 1))
+    cached = _DISCOVER_CACHE.get(cache_key)
+    if cached and (time.time() - cached["_ts"]) < _CACHE_TTL_SEC:
+        # Return a fresh copy with the requested trip_id
+        result = dict(cached)
+        result["trip_id"] = trip_id
+        result.pop("_ts", None)
+        logger.info(f"Discover cache HIT for {city!r} — returning instantly")
+        return result
 
-    # 2. Categorize places using Gemini categorizer agent via ADK
-    categories: Dict[str, List[str]] = {
-        "Adventure": [],
-        "Food": [],
-        "Nature": [],
-        "Culture": [],
-        "Sightseeing": [],
-    }
+    # -----------------------------------------------------------------------
+    # 2. Discover candidate places (parallel HTTP — fast)
+    # -----------------------------------------------------------------------
+    # find_places now uses ThreadPoolExecutor internally, so wrap in executor
+    # to avoid blocking the async event loop.
+    loop = asyncio.get_event_loop()
+    candidates = await loop.run_in_executor(
+        None, find_places, city, lat, lng, radius_km
+    )
 
-    categorized = False
+    # -----------------------------------------------------------------------
+    # 3. Categorise using fast deterministic classifier (no Gemini round-trip)
+    # -----------------------------------------------------------------------
+    categories = deterministic_categorize_places(candidates)
 
-    try:
-        # Create session for this user and trip
-        session = await session_service.create_session(
-            app_name="trip_ai_categorizer",
-            user_id=user_id or "anonymous_traveler",
-        )
-
-        places_payload = [
-            {"id": p["place_id"], "name": p["name"], "types": p.get("types", [])}
-            for p in candidates
-        ]
-
-        prompt_text = (
-            f"Categorize the following places in and around {city} into Adventure, Food, Nature, Culture, and Sightseeing:\n"
-            f"{json.dumps(places_payload, indent=2)}"
-        )
-
-        message = types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=prompt_text)],
-        )
-
-        final_response_text = ""
-        # Run ADK categorizer runner asynchronously
-        async for event in categorizer_runner.run_async(
-            session_id=session.id,
-            user_id=user_id or "anonymous_traveler",
-            new_message=message,
-        ):
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if part.text:
-                        final_response_text += part.text
-
-        # Extract JSON from model output
-        cleaned = final_response_text.strip()
-        if "```json" in cleaned:
-            cleaned = cleaned.split("```json")[1].split("```")[0].strip()
-        elif "```" in cleaned:
-            cleaned = cleaned.split("```")[1].split("```")[0].strip()
-
-        parsed = json.loads(cleaned)
-        for cat in ["Adventure", "Food", "Nature", "Culture", "Sightseeing"]:
-            if cat in parsed and isinstance(parsed[cat], list):
-                categories[cat] = [str(x) for x in parsed[cat]]
-        categorized = True
-    except Exception as e:
-        logger.warning(f"ADK categorizer fallback triggered: {e}")
-
-    # Fallback to deterministic classifier if LLM output was malformed or unavailable
-    if not categorized or not any(categories.values()):
-        categories = deterministic_categorize_places(candidates)
-
-    return {
+    result = {
         "trip_id": trip_id,
         "city": city,
         "center": {"lat": lat, "lng": lng},
@@ -136,6 +99,11 @@ async def run_discover_async(
         "categories": categories,
         "places": candidates,
     }
+
+    # Store in cache
+    _DISCOVER_CACHE[cache_key] = {**result, "_ts": time.time()}
+
+    return result
 
 
 async def run_plan_async(
@@ -148,22 +116,39 @@ async def run_plan_async(
     end_point: str,
     hotel: Optional[str] = None,
     travel_mode: str = "DRIVE",
+    selected_names: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Runs ADK planner agent with get_place_details and compute_route tools
     to generate an optimized, scheduled daily itinerary.
     """
-    # Filter selected place objects
+    # Filter selected place objects (by place_id and by name)
     places_lookup = {p["place_id"]: p for p in all_places_pool}
+    for p in all_places_pool:
+        if "name" in p:
+            places_lookup[p["name"]] = p
+
     selected_places = []
-    for pid in selected_ids:
+    for idx, pid in enumerate(selected_ids):
         if pid in places_lookup:
             selected_places.append(places_lookup[pid])
-        else:
-            # Fallback for unknown id
+        elif selected_names and idx < len(selected_names) and selected_names[idx]:
             selected_places.append(
                 {
                     "place_id": pid,
-                    "name": pid.replace("local_", "").replace("_", " ").title(),
+                    "name": selected_names[idx],
+                    "types": ["tourist_attraction"],
+                    "rating": 4.6,
+                }
+            )
+        else:
+            # Fallback for unknown id
+            name = pid.replace("local_", "").replace("city_", "").replace("_", " ").title()
+            if "stop" in name.lower() or not name.strip():
+                name = "City Attraction Landmark"
+            selected_places.append(
+                {
+                    "place_id": pid,
+                    "name": name,
                     "types": ["tourist_attraction"],
                     "rating": 4.5,
                 }
@@ -176,62 +161,22 @@ async def run_plan_async(
             app_name="trip_ai_planner",
             user_id=user_id or "anonymous_traveler",
         )
-
-        plan_request = {
-            "trip_id": trip_id,
-            "dates": dates,
-            "start_point": start_point or "Starting Point",
-            "hotel": hotel or "Hotel Stay",
-            "end_point": end_point or hotel or start_point or "Hotel",
-            "travel_mode": travel_mode,
-            "selected_places": [
-                {"id": p["place_id"], "name": p["name"]}
-                for p in selected_places
-            ],
-        }
-
-        prompt_text = (
-            "Create a daily travel itinerary for this trip request. "
-            "Use the tools get_place_details and compute_route to optimize travel times and respect opening hours.\n"
-            f"{json.dumps(plan_request, indent=2)}"
-        )
-
-        message = types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=prompt_text)],
-        )
-
-        final_response_text = ""
-        async for event in planner_runner.run_async(
-            session_id=session.id,
-            user_id=user_id or "anonymous_traveler",
-            new_message=message,
-        ):
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if part.text:
-                        final_response_text += part.text
-
-        cleaned = final_response_text.strip()
-        if "```json" in cleaned:
-            cleaned = cleaned.split("```json")[1].split("```")[0].strip()
-        elif "```" in cleaned:
-            cleaned = cleaned.split("```")[1].split("```")[0].strip()
-
-        parsed = json.loads(cleaned)
-        if "days" in parsed and isinstance(parsed["days"], list):
-            itinerary_result = parsed
     except Exception as e:
-        logger.warning(f"ADK planner fallback triggered: {e}")
+        logger.warning(f"Failed to create session: {e}")
 
-    # Fallback to robust programmatic schedule builder
+    # Fast robust programmatic schedule builder
     if not itinerary_result or "days" not in itinerary_result:
-        itinerary_result = build_daily_schedules_programmatic(
-            dates=dates,
-            selected_places=selected_places,
-            start_point=start_point,
-            end_point=end_point,
-            travel_mode=travel_mode,
+        loop = asyncio.get_event_loop()
+        itinerary_result = await loop.run_in_executor(
+            None,
+            lambda: build_daily_schedules_programmatic(
+                dates=dates,
+                selected_places=selected_places,
+                start_point=start_point,
+                end_point=end_point,
+                hotel=hotel,
+                travel_mode=travel_mode,
+            ),
         )
 
     itinerary_result["trip_id"] = trip_id

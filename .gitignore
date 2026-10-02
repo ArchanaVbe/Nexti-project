@@ -57,3 +57,13 @@ backend/env/
 venv/
 __pycache__/
 *.pyc
+
+# Service Account Keys & Secrets
+*serviceAccountKey*.json
+backend/serviceAccountKey*.json
+serviceAccountKey.json
+*.pem
+
+# Android build directory
+/android/build/
+android/build/

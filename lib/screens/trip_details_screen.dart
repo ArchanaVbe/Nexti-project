@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'dart:math' as math;
 import '../models/trip_plan_models.dart';
+import '../services/karnataka_places.dart';
 
 class TripDetailsScreen extends StatefulWidget {
   final Map<String, dynamic> trip;
@@ -135,19 +136,55 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
     final destRaw = (widget.trip['destination'] ?? 'Karnataka').toString().trim();
     final destKey = destRaw.toLowerCase();
 
-    // 1. Resolve destination center
-    if (_knownDestinations.containsKey(destKey)) {
+    // 1. Resolve destination center using KarnatakaPlacesRegistry or known destinations
+    final resolvedCenter = KarnatakaPlacesRegistry.resolvePlace(destRaw);
+    if (resolvedCenter != null) {
+      _destinationCenter = LatLng(resolvedCenter.lat, resolvedCenter.lng);
+    } else if (_knownDestinations.containsKey(destKey)) {
       _destinationCenter = _knownDestinations[destKey]!;
     } else {
       // Default to central Karnataka
       _destinationCenter = const LatLng(15.3173, 75.7139);
     }
 
-    final rawPlaces = (widget.trip['places'] as List?)?.map((e) => e.toString()).toList() ?? [];
+    var rawPlaces = (widget.trip['places'] as List?)?.map((e) => e.toString()).toList() ?? [];
+    if (rawPlaces.isEmpty) {
+      final curated = KarnatakaPlacesRegistry.getCuratedAttractions(destRaw);
+      if (curated.isNotEmpty) {
+        rawPlaces = curated.take(6).map((p) => p.name).toList();
+      }
+    }
+
+    final Map<String, dynamic>? explicitCoords = widget.trip['placeCoordinates'] is Map
+        ? Map<String, dynamic>.from(widget.trip['placeCoordinates'] as Map)
+        : null;
+
     _placeCoordinates.clear();
 
     final markers = <Marker>{};
-    final routePoints = <LatLng>[_destinationCenter];
+    final routePoints = <LatLng>[];
+
+    // Add hotel marker if available
+    final hotelName = widget.trip['hotel']?.toString();
+    final hotelLat = (widget.trip['hotelLat'] as num?)?.toDouble();
+    final hotelLng = (widget.trip['hotelLng'] as num?)?.toDouble();
+    if (hotelLat != null && hotelLng != null && hotelLat != 0.0 && hotelLng != 0.0) {
+      final hotelPos = LatLng(hotelLat, hotelLng);
+      routePoints.add(hotelPos);
+      markers.add(
+        Marker(
+          markerId: const MarkerId('trip_hotel'),
+          position: hotelPos,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange),
+          infoWindow: InfoWindow(
+            title: hotelName != null && hotelName.isNotEmpty ? hotelName : 'Selected Hotel / Stay',
+            snippet: 'Stay / Accommodation Base',
+          ),
+        ),
+      );
+    } else {
+      routePoints.add(_destinationCenter);
+    }
 
     // Add destination center marker
     markers.add(
@@ -167,11 +204,35 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
       final place = rawPlaces[i];
       final placeKey = place.toLowerCase().trim();
 
-      LatLng coordinate;
-      if (_knownPlaces.containsKey(placeKey)) {
+      LatLng? coordinate;
+
+      // A. Check explicit coordinates passed from creation or sync
+      if (explicitCoords != null && explicitCoords.containsKey(place)) {
+        final c = explicitCoords[place];
+        if (c is Map && c['lat'] != null && c['lng'] != null) {
+          final lat = (c['lat'] as num).toDouble();
+          final lng = (c['lng'] as num).toDouble();
+          if (lat != 0.0 || lng != 0.0) {
+            coordinate = LatLng(lat, lng);
+          }
+        }
+      }
+
+      // B. Lookup in KarnatakaPlacesRegistry
+      if (coordinate == null) {
+        final regCoord = KarnatakaPlacesRegistry.findPlaceCoordinate(place, destination: destRaw);
+        if (regCoord != null) {
+          coordinate = LatLng(regCoord.lat, regCoord.lng);
+        }
+      }
+
+      // C. Lookup in legacy known places map
+      if (coordinate == null && _knownPlaces.containsKey(placeKey)) {
         coordinate = _knownPlaces[placeKey]!;
-      } else {
-        // Deterministically space out points around the destination center
+      }
+
+      // D. Fallback: space out around center
+      if (coordinate == null) {
         final angle = (i * (2 * math.pi / (rawPlaces.isEmpty ? 1 : rawPlaces.length))) + 0.35;
         final distanceDegrees = 0.025 + ((i % 3) * 0.022); // roughly 3km - 8km offset
         final latOffset = distanceDegrees * math.sin(angle);

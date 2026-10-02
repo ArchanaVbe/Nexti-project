@@ -112,7 +112,7 @@ class _HotelMapPickerScreenState extends State<HotelMapPickerScreen> {
       return;
     }
 
-    _searchDebounce = Timer(const Duration(milliseconds: 350), () async {
+    _searchDebounce = Timer(const Duration(milliseconds: 150), () async {
       setState(() {
         _isSearching = true;
       });
@@ -121,6 +121,7 @@ class _HotelMapPickerScreenState extends State<HotelMapPickerScreen> {
         final results = await TripApi.autocompleteCity(
           query.trim(),
           types: 'lodging',
+          destination: widget.destinationName,
         );
         if (mounted) {
           setState(() {
@@ -293,14 +294,17 @@ class _HotelMapPickerScreenState extends State<HotelMapPickerScreen> {
                 if (_searchSuggestions.isNotEmpty) ...[
                   Container(
                     margin: const EdgeInsets.only(top: 6),
-                    constraints: const BoxConstraints(maxHeight: 220),
+                    constraints: const BoxConstraints(maxHeight: 280),
                     decoration: BoxDecoration(
                       color: isDark ? const Color(0xFF1E293B) : Colors.white,
                       borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: const Color(0xFF6366F1).withValues(alpha: 0.35),
+                      ),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.2),
-                          blurRadius: 10,
+                          color: Colors.black.withValues(alpha: 0.25),
+                          blurRadius: 12,
                           offset: const Offset(0, 4),
                         ),
                       ],
@@ -311,6 +315,7 @@ class _HotelMapPickerScreenState extends State<HotelMapPickerScreen> {
                       itemCount: _searchSuggestions.length,
                       separatorBuilder: (context, index) => Divider(
                         height: 1,
+                        thickness: 0.5,
                         color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
                       ),
                       itemBuilder: (ctx, idx) {
@@ -322,6 +327,7 @@ class _HotelMapPickerScreenState extends State<HotelMapPickerScreen> {
                             sugg.description,
                             style: TextStyle(
                               fontSize: 13,
+                              fontWeight: FontWeight.w600,
                               color: isDark ? Colors.white : const Color(0xFF0F172A),
                             ),
                           ),
@@ -335,32 +341,33 @@ class _HotelMapPickerScreenState extends State<HotelMapPickerScreen> {
             ),
           ),
 
-          // Instruction badge
-          Positioned(
-            top: 76,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.7),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.touch_app_rounded, color: Colors.amberAccent, size: 16),
-                    SizedBox(width: 6),
-                    Text(
-                      'Tap anywhere on the map to place hotel pin',
-                      style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
-                    ),
-                  ],
+          // Instruction badge (only visible when not searching)
+          if (_searchSuggestions.isEmpty)
+            Positioned(
+              top: 76,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.7),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.touch_app_rounded, color: Colors.amberAccent, size: 16),
+                      SizedBox(width: 6),
+                      Text(
+                        'Tap anywhere on the map to place hotel pin',
+                        style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
 
           // Bottom card with confirm button
           Positioned(
