@@ -2,7 +2,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:location/location.dart' as location_pkg;
-import 'package:geocoding/geocoding.dart' show placemarkFromCoordinates;
+import 'package:geocoding/geocoding.dart';
 
 class GoogleMapsSelection extends StatefulWidget {
   const GoogleMapsSelection({super.key});
@@ -14,6 +14,7 @@ class GoogleMapsSelection extends StatefulWidget {
 class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
   late GoogleMapController mapController;
   final location_pkg.Location locationController = location_pkg.Location();
+  final Geocoding _geocoding = Geocoding();
 
   LatLng? currentLocation;
   LatLng? selectedDestination;
@@ -52,7 +53,7 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
       });
 
       try {
-        final placemarks = await placemarkFromCoordinates(lat, lng);
+        final placemarks = await _geocoding.placemarkFromCoordinates(lat, lng);
         if (placemarks.isNotEmpty && mounted) {
           setState(() {
             currentLocationController.text =
@@ -104,7 +105,7 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
     final time = _estimateTravelTime(distance);
 
     try {
-      final placemarks = await placemarkFromCoordinates(
+      final placemarks = await _geocoding.placemarkFromCoordinates(
         selectedDestination!.latitude,
         selectedDestination!.longitude,
       );
