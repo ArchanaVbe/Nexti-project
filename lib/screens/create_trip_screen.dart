@@ -1303,6 +1303,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     TextCapitalization textCapitalization = TextCapitalization.none,
     ValueChanged<String>? onChanged,
     Widget? suffixIcon,
+    Widget? aboveFieldWidget,
   }) {
     final bool hasError = errorText != null && errorText.isNotEmpty;
 
@@ -1342,6 +1343,10 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           ],
         ),
         const SizedBox(height: 8),
+        if (aboveFieldWidget != null) ...[
+          aboveFieldWidget,
+          const SizedBox(height: 8),
+        ],
         TextField(
           controller: controller,
           readOnly: readOnly,
@@ -1662,6 +1667,82 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             LengthLimitingTextInputFormatter(100),
             FirstLetterCapitalizationFormatter(),
           ],
+          aboveFieldWidget: (_citySuggestions.isNotEmpty || _isSearchingCity)
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_isSearchingCity)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6, left: 4),
+                        child: Row(
+                          children: [
+                            const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF6366F1)),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Searching city suggestions...',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (_citySuggestions.isNotEmpty)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 4),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF1E293B) : Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: const Color(0xFF6366F1).withValues(alpha: 0.35),
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.08),
+                              blurRadius: 8,
+                              offset: const Offset(0, -2),
+                            ),
+                          ],
+                        ),
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 260),
+                          child: ListView.separated(
+                            shrinkWrap: true,
+                            padding: EdgeInsets.zero,
+                            itemCount: _citySuggestions.length,
+                            separatorBuilder: (context, index) => Divider(
+                              height: 1,
+                              thickness: 0.5,
+                              color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.08),
+                            ),
+                            itemBuilder: (context, index) {
+                              final sugg = _citySuggestions[index];
+                              return ListTile(
+                                dense: true,
+                                leading: const Icon(Icons.location_city_rounded, size: 18, color: Color(0xFF6366F1)),
+                                title: Text(
+                                  sugg.description,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: isDark ? Colors.white : const Color(0xFF0F172A),
+                                  ),
+                                ),
+                                onTap: () => _selectCitySuggestion(sugg),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                  ],
+                )
+              : null,
           onChanged: (val) {
             _onCityChanged(val);
             if (_destinationError != null || _stepWarningMessage != null) {
@@ -1683,76 +1764,6 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             }
           },
         ),
-        if (_isSearchingCity) ...[
-          Padding(
-            padding: const EdgeInsets.only(top: 0, bottom: 12, left: 4),
-            child: Row(
-              children: [
-                const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF6366F1)),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  'Searching city suggestions...',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-        if (_citySuggestions.isNotEmpty) ...[
-          Container(
-            margin: const EdgeInsets.only(top: 0, bottom: 16),
-            decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF1E293B) : Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: const Color(0xFF6366F1).withValues(alpha: 0.35),
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.08),
-                  blurRadius: 8,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 280),
-              child: ListView.separated(
-                shrinkWrap: true,
-                padding: EdgeInsets.zero,
-                itemCount: _citySuggestions.length,
-                separatorBuilder: (context, index) => Divider(
-                  height: 1,
-                  thickness: 0.5,
-                  color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.08),
-                ),
-                itemBuilder: (context, index) {
-                  final sugg = _citySuggestions[index];
-                  return ListTile(
-                    dense: true,
-                    leading: const Icon(Icons.location_city_rounded, size: 18, color: Color(0xFF6366F1)),
-                    title: Text(
-                      sugg.description,
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: isDark ? Colors.white : const Color(0xFF0F172A),
-                      ),
-                    ),
-                    onTap: () => _selectCitySuggestion(sugg),
-                  );
-                },
-              ),
-            ),
-          ),
-        ],
         _buildTextField(
           label: 'Start Date',
           hint: 'Select start date',
