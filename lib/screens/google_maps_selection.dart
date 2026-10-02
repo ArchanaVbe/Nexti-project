@@ -557,8 +557,10 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
       body: SafeArea(
         child: Stack(
           children: [
@@ -600,7 +602,7 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                     decoration: BoxDecoration(
-                      color: Colors.white,
+                      color: isDark ? const Color(0xFF1E293B) : Colors.white,
                       borderRadius: BorderRadius.circular(16),
                       boxShadow: [
                         BoxShadow(
@@ -617,19 +619,19 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                         Row(
                           children: [
                             IconButton(
-                              icon: const Icon(Icons.arrow_back, color: Color(0xFF1E293B)),
+                              icon: Icon(Icons.arrow_back, color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E293B)),
                               padding: EdgeInsets.zero,
                               constraints: const BoxConstraints(),
                               onPressed: () => Navigator.pop(context),
                             ),
                             const SizedBox(width: 10),
-                            const Expanded(
+                            Expanded(
                               child: Text(
                                 'Directions & Route Preview',
                                 style: TextStyle(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w700,
-                                  color: Color(0xFF0F172A),
+                                  color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
                                 ),
                               ),
                             ),
@@ -668,17 +670,21 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                             Expanded(
                               child: TextField(
                                 controller: currentLocationController,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontSize: 14,
                                   fontWeight: FontWeight.w600,
-                                  color: Color(0xFF0F172A),
+                                  color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
                                 ),
-                                decoration: const InputDecoration(
+                                decoration: InputDecoration(
                                   hintText: 'Your starting location...',
-                                  hintStyle: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                                  hintStyle: TextStyle(
+                                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                    fontSize: 13,
+                                  ),
                                   isDense: true,
+                                  filled: false,
                                   border: InputBorder.none,
-                                  contentPadding: EdgeInsets.symmetric(vertical: 4),
+                                  contentPadding: const EdgeInsets.symmetric(vertical: 4),
                                 ),
                               ),
                             ),
@@ -706,14 +712,18 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                             children: [
                               Column(
                                 children: [
-                                  Container(width: 2, height: 4, color: const Color(0xFFCBD5E1)),
+                                  Container(width: 2, height: 4, color: isDark ? const Color(0xFF475569) : const Color(0xFFCBD5E1)),
                                   const SizedBox(height: 2),
-                                  Container(width: 2, height: 4, color: const Color(0xFFCBD5E1)),
+                                  Container(width: 2, height: 4, color: isDark ? const Color(0xFF475569) : const Color(0xFFCBD5E1)),
                                 ],
                               ),
                               const SizedBox(width: 18),
-                              const Expanded(
-                                child: Divider(height: 1, thickness: 0.8, color: Color(0xFFE2E8F0)),
+                              Expanded(
+                                child: Divider(
+                                  height: 1,
+                                  thickness: 0.8,
+                                  color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                                ),
                               ),
                             ],
                           ),
@@ -729,17 +739,21 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                                 controller: destinationController,
                                 onChanged: _onDestinationQueryChanged,
                                 onSubmitted: _resolveDestinationAndRoute,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontSize: 14,
                                   fontWeight: FontWeight.w600,
-                                  color: Color(0xFF0F172A),
+                                  color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
                                 ),
-                                decoration: const InputDecoration(
+                                decoration: InputDecoration(
                                   hintText: 'Enter destination or tap on map...',
-                                  hintStyle: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                                  hintStyle: TextStyle(
+                                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                    fontSize: 13,
+                                  ),
                                   isDense: true,
+                                  filled: false,
                                   border: InputBorder.none,
-                                  contentPadding: EdgeInsets.symmetric(vertical: 4),
+                                  contentPadding: const EdgeInsets.symmetric(vertical: 4),
                                 ),
                               ),
                             ),
@@ -767,7 +781,7 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                     Container(
                       margin: const EdgeInsets.only(top: 6),
                       decoration: BoxDecoration(
-                        color: Colors.white,
+                        color: isDark ? const Color(0xFF1E293B) : Colors.white,
                         borderRadius: BorderRadius.circular(12),
                         boxShadow: [
                           BoxShadow(
@@ -780,7 +794,11 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                         shrinkWrap: true,
                         padding: EdgeInsets.zero,
                         itemCount: destinationSuggestions.length,
-                        separatorBuilder: (context, index) => const Divider(height: 1, thickness: 0.5),
+                        separatorBuilder: (context, index) => Divider(
+                          height: 1,
+                          thickness: 0.5,
+                          color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                        ),
                         itemBuilder: (context, index) {
                           final place = destinationSuggestions[index];
                           return ListTile(
@@ -788,7 +806,11 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                             leading: const Icon(Icons.place_rounded, color: Color(0xFFEA4335), size: 18),
                             title: Text(
                               place.name,
-                              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
+                              ),
                             ),
                             onTap: () {
                               setState(() {
@@ -816,7 +838,7 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                               child: ActionChip(
                                 label: Text(city),
                                 labelStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
-                                backgroundColor: const Color(0xFF1E293B).withValues(alpha: 0.85),
+                                backgroundColor: isDark ? const Color(0xFF334155) : const Color(0xFF1E293B).withValues(alpha: 0.85),
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                                 padding: const EdgeInsets.symmetric(horizontal: 4),
                                 onPressed: () {
@@ -839,7 +861,7 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
               bottom: (distanceInKm != null) ? 180 : 90,
               child: FloatingActionButton.small(
                 heroTag: 'gps_btn',
-                backgroundColor: Colors.white,
+                backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
                 onPressed: () {
                   if (currentLocation != null) {
                     _updateMapCamera(currentLocation!, zoom: 14);
@@ -860,7 +882,7 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                 child: Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    color: isDark ? const Color(0xFF1E293B) : Colors.white,
                     borderRadius: BorderRadius.circular(16),
                     boxShadow: [
                       BoxShadow(
@@ -901,20 +923,20 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                                 children: [
                                   Text(
                                     _formatTravelTime(travelTime!),
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       fontSize: 20,
                                       fontWeight: FontWeight.w800,
-                                      color: Color(0xFF1E8E3E), // Green travel time
+                                      color: isDark ? const Color(0xFF4ADE80) : const Color(0xFF1E8E3E), // Green travel time
                                     ),
                                   ),
                                   Text(
                                     isCalculatingRoute
                                         ? 'Finding actual road route...'
                                         : '${distanceInKm!.toStringAsFixed(1)} km • Fastest road route',
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       fontSize: 12,
                                       fontWeight: FontWeight.w500,
-                                      color: Color(0xFF64748B),
+                                      color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
                                     ),
                                   ),
                                 ],

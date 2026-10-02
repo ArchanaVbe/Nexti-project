@@ -770,12 +770,13 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     final centerTarget = selectedHotel != null
         ? LatLng(selectedHotel!.latitude, selectedHotel!.longitude)
         : widget.userLocation;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
       body: SafeArea(
         child: Stack(
           children: [
@@ -808,7 +809,7 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                     decoration: BoxDecoration(
-                      color: Colors.white,
+                      color: isDark ? const Color(0xFF1E293B) : Colors.white,
                       borderRadius: BorderRadius.circular(16),
                       boxShadow: [
                         BoxShadow(
@@ -821,7 +822,7 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
                     child: Row(
                       children: [
                         IconButton(
-                          icon: const Icon(Icons.arrow_back, color: Color(0xFF1E293B)),
+                          icon: Icon(Icons.arrow_back, color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E293B)),
                           padding: EdgeInsets.zero,
                           constraints: const BoxConstraints(),
                           onPressed: () => Navigator.pop(context),
@@ -833,10 +834,18 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
                             onChanged: _onSearchQueryChanged,
                             textInputAction: TextInputAction.search,
                             onSubmitted: _performGoogleSearch,
-                            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF0F172A)),
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
+                            ),
                             decoration: InputDecoration(
                               hintText: 'Search hotels in ${widget.destinationCity ?? "Karnataka"}...',
-                              hintStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                              hintStyle: TextStyle(
+                                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                fontSize: 13,
+                              ),
+                              filled: false,
                               border: InputBorder.none,
                               isDense: true,
                               contentPadding: const EdgeInsets.symmetric(vertical: 8),
@@ -864,24 +873,28 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
                       margin: const EdgeInsets.only(top: 8),
                       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                       decoration: BoxDecoration(
-                        color: Colors.white,
+                        color: isDark ? const Color(0xFF1E293B) : Colors.white,
                         borderRadius: BorderRadius.circular(20),
                         boxShadow: const [
                           BoxShadow(color: Colors.black12, blurRadius: 6),
                         ],
                       ),
-                      child: const Row(
+                      child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          SizedBox(
+                          const SizedBox(
                             width: 12,
                             height: 12,
                             child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4285F4)),
                           ),
-                          SizedBox(width: 8),
+                          const SizedBox(width: 8),
                           Text(
                             'Loading real hotels from Google Maps...',
-                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF1E293B)),
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E293B),
+                            ),
                           ),
                         ],
                       ),
@@ -896,7 +909,7 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
               bottom: 240,
               child: FloatingActionButton.small(
                 heroTag: 'hotel_gps',
-                backgroundColor: Colors.white,
+                backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
                 onPressed: () {
                   if (selectedHotel != null && mapController != null) {
                     mapController!.animateCamera(
