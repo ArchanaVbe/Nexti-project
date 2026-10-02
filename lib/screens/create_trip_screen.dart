@@ -628,7 +628,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             );
         final placeName = await TripApi.reverseGeocode(position.latitude, position.longitude);
 
-        if (mounted && _startPointController.text.isEmpty && placeName.isNotEmpty) {
+        if (mounted && (_startPointController.text.isEmpty || _startPointController.text.startsWith('Location (')) && placeName.isNotEmpty) {
           setState(() {
             _startPointController.text = placeName;
           });

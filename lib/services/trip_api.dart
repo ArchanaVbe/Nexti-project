@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:geocoding/geocoding.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/trip_plan_models.dart';
 import 'karnataka_places.dart';
@@ -214,34 +215,89 @@ class TripApi {
     ];
   }
 
-  /// Reverse geocode coordinates to a clean human-readable address
+  /// Reverse geocode coordinates to a clean human-readable address with area and city
   static Future<String> reverseGeocode(double lat, double lng) async {
-    final baseUrl = await getBaseUrl();
-    final url = Uri.parse('$baseUrl/places/reverse-geocode');
-
+    // 1. Try on-device native geocoding (fastest, most accurate street/area + city)
     try {
+      final geocoding = Geocoding();
+      final placemarks = await geocoding.placemarkFromCoordinates(lat, lng);
+      if (placemarks.isNotEmpty) {
+        final p = placemarks[0];
+        final parts = <String>[];
+
+        // Specific area / street (e.g. Vinoba Nagara)
+        final area = (p.subLocality != null && p.subLocality!.isNotEmpty)
+            ? p.subLocality!
+            : (p.street != null && p.street!.isNotEmpty && !p.street!.contains('+') && p.street != p.name)
+                ? p.street!
+                : (p.name != null && p.name!.isNotEmpty && !p.name!.contains('+'))
+                    ? p.name!
+                    : null;
+        if (area != null && area.isNotEmpty) {
+          parts.add(area);
+        }
+
+        // City / town (e.g. Shivamogga)
+        final city = (p.locality != null && p.locality!.isNotEmpty)
+            ? p.locality!
+            : (p.subAdministrativeArea != null && p.subAdministrativeArea!.isNotEmpty)
+                ? p.subAdministrativeArea!
+                : null;
+        if (city != null && city.isNotEmpty && !parts.contains(city)) {
+          parts.add(city);
+        }
+
+        // State (e.g. Karnataka)
+        if (p.administrativeArea != null && p.administrativeArea!.isNotEmpty && !parts.contains(p.administrativeArea)) {
+          parts.add(p.administrativeArea!);
+        }
+
+        if (parts.isNotEmpty) {
+          return parts.join(', ');
+        }
+      }
+    } catch (_) {}
+
+    // 2. Try backend reverse-geocode endpoint if reachable
+    try {
+      final baseUrl = await getBaseUrl();
+      final url = Uri.parse('$baseUrl/places/reverse-geocode');
       final response = await http
           .post(
             url,
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'lat': lat,
-              'lng': lng,
-            }),
+            body: jsonEncode({'lat': lat, 'lng': lng}),
           )
-          .timeout(const Duration(seconds: 8));
+          .timeout(const Duration(seconds: 4));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        final loc = (data['locality'] ?? data['address'])?.toString();
-        if (loc != null && loc.isNotEmpty) {
+        final loc = (data['address'] ?? data['locality'])?.toString();
+        if (loc != null && loc.isNotEmpty && !loc.startsWith('Location (')) {
           return loc;
         }
       }
-    } catch (e) {
-      debugPrint('Reverse geocode note: $e');
+    } catch (_) {}
+
+    // 3. Fallback: match nearest Karnataka hub/city center
+    KarnatakaPlace? closest;
+    double minDistance = double.infinity;
+    for (final dest in KarnatakaPlacesRegistry.destinations) {
+      final dLat = (dest.lat - lat);
+      final dLng = (dest.lng - lng);
+      final distSq = dLat * dLat + dLng * dLng;
+      if (distSq < minDistance) {
+        minDistance = distSq;
+        closest = dest;
+      }
     }
-    return 'Location (${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)})';
+
+    if (closest != null) {
+      final parts = closest.name.split(',').map((e) => e.trim()).take(2).join(', ');
+      return parts;
+    }
+
+    return 'Karnataka, India';
   }
 
   // --------------------------------------------------------------------

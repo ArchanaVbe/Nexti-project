@@ -57,7 +57,9 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
   void initState() {
     super.initState();
     if (widget.initialStartPoint != null && widget.initialStartPoint!.isNotEmpty) {
-      currentLocationController.text = widget.initialStartPoint!;
+      if (!widget.initialStartPoint!.startsWith('Location (')) {
+        currentLocationController.text = widget.initialStartPoint!;
+      }
     }
     if (widget.initialDestination != null && widget.initialDestination!.isNotEmpty) {
       destinationController.text = widget.initialDestination!;
@@ -67,6 +69,24 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
     }
 
     _fetchCurrentLocation();
+  }
+
+  String? _findNearestKarnatakaCity(double lat, double lng) {
+    KarnatakaPlace? closest;
+    double minDistance = double.infinity;
+    for (final dest in KarnatakaPlacesRegistry.destinations) {
+      final dLat = (dest.lat - lat);
+      final dLng = (dest.lng - lng);
+      final distSq = dLat * dLat + dLng * dLng;
+      if (distSq < minDistance) {
+        minDistance = distSq;
+        closest = dest;
+      }
+    }
+    if (closest != null) {
+      return closest.name.split(',').map((e) => e.trim()).take(2).join(', ');
+    }
+    return null;
   }
 
   Future<void> _fetchCurrentLocation() async {
@@ -107,8 +127,9 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
         isFetchingLocation = false;
       });
 
-      // Reverse geocode if start location text is empty
-      if (currentLocationController.text.trim().isEmpty) {
+      // Reverse geocode if start location text is empty or contains raw coordinate pattern
+      final currentText = currentLocationController.text.trim();
+      if (currentText.isEmpty || currentText.startsWith('Location (') || currentText.contains(RegExp(r'\d+\.\d+'))) {
         try {
           final placemarks = await _geocoding.placemarkFromCoordinates(
             position.latitude,
@@ -116,19 +137,41 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
           );
           if (placemarks.isNotEmpty && mounted) {
             final p = placemarks[0];
-            final placeName = [
-              p.locality,
-              p.subAdministrativeArea,
-              p.administrativeArea,
-            ].where((e) => e != null && e.isNotEmpty).join(', ');
-            setState(() {
-              currentLocationController.text = placeName.isNotEmpty ? placeName : 'Current Location';
-            });
+            final parts = <String>[];
+            final area = (p.subLocality != null && p.subLocality!.isNotEmpty)
+                ? p.subLocality!
+                : (p.street != null && p.street!.isNotEmpty && !p.street!.contains('+') && p.street != p.name)
+                    ? p.street!
+                    : (p.name != null && p.name!.isNotEmpty && !p.name!.contains('+'))
+                        ? p.name!
+                        : null;
+            if (area != null && area.isNotEmpty) parts.add(area);
+
+            final city = (p.locality != null && p.locality!.isNotEmpty)
+                ? p.locality!
+                : (p.subAdministrativeArea != null && p.subAdministrativeArea!.isNotEmpty)
+                    ? p.subAdministrativeArea!
+                    : null;
+            if (city != null && city.isNotEmpty && !parts.contains(city)) parts.add(city);
+
+            if (p.administrativeArea != null && p.administrativeArea!.isNotEmpty && !parts.contains(p.administrativeArea)) {
+              parts.add(p.administrativeArea!);
+            }
+
+            final placeName = parts.isNotEmpty ? parts.join(', ') : '';
+            if (placeName.isNotEmpty) {
+              setState(() {
+                currentLocationController.text = placeName;
+              });
+            }
           }
-        } catch (_) {
-          if (mounted && currentLocationController.text.isEmpty) {
+        } catch (_) {}
+
+        if (currentLocationController.text.isEmpty || currentLocationController.text.startsWith('Location (')) {
+          final nearestCity = _findNearestKarnatakaCity(position.latitude, position.longitude);
+          if (nearestCity != null && mounted) {
             setState(() {
-              currentLocationController.text = 'Current Location';
+              currentLocationController.text = nearestCity;
             });
           }
         }
@@ -317,20 +360,40 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
       );
       if (placemarks.isNotEmpty && mounted) {
         final p = placemarks[0];
-        final parts = [p.locality, p.subAdministrativeArea, p.administrativeArea]
-            .where((e) => e != null && e.isNotEmpty)
-            .toList();
-        setState(() {
-          destinationController.text = parts.isNotEmpty
-              ? parts.first!
-              : '${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}';
-        });
+        final parts = <String>[];
+        final area = (p.subLocality != null && p.subLocality!.isNotEmpty)
+            ? p.subLocality!
+            : (p.street != null && p.street!.isNotEmpty && !p.street!.contains('+') && p.street != p.name)
+                ? p.street!
+                : (p.name != null && p.name!.isNotEmpty && !p.name!.contains('+'))
+                    ? p.name!
+                    : null;
+        if (area != null && area.isNotEmpty) parts.add(area);
+
+        final city = (p.locality != null && p.locality!.isNotEmpty)
+            ? p.locality!
+            : (p.subAdministrativeArea != null && p.subAdministrativeArea!.isNotEmpty)
+                ? p.subAdministrativeArea!
+                : null;
+        if (city != null && city.isNotEmpty && !parts.contains(city)) parts.add(city);
+
+        if (p.administrativeArea != null && p.administrativeArea!.isNotEmpty && !parts.contains(p.administrativeArea)) {
+          parts.add(p.administrativeArea!);
+        }
+
+        if (parts.isNotEmpty) {
+          setState(() {
+            destinationController.text = parts.join(', ');
+          });
+        }
       }
-    } catch (_) {
-      if (mounted && destinationController.text.isEmpty) {
+    } catch (_) {}
+
+    if (destinationController.text.isEmpty || destinationController.text.contains(RegExp(r'\d+\.\d+'))) {
+      final nearestCity = _findNearestKarnatakaCity(position.latitude, position.longitude);
+      if (nearestCity != null && mounted) {
         setState(() {
-          destinationController.text =
-              '${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}';
+          destinationController.text = 'near $nearestCity';
         });
       }
     }
