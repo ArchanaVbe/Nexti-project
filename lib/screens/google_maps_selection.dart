@@ -4,6 +4,8 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import '../services/karnataka_places.dart';
+import '../services/road_routing_service.dart';
+import '../services/trip_api.dart';
 
 class GoogleMapsSelection extends StatefulWidget {
   final String? initialDestination;
@@ -39,6 +41,7 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
   bool isLoading = true;
   bool isFetchingLocation = false;
   bool isSearchingDestination = false;
+  bool isCalculatingRoute = false;
   List<KarnatakaPlace> destinationSuggestions = [];
 
   // Popular quick-pick destinations
@@ -57,8 +60,9 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
   void initState() {
     super.initState();
     if (widget.initialStartPoint != null && widget.initialStartPoint!.isNotEmpty) {
-      if (!widget.initialStartPoint!.startsWith('Location (')) {
-        currentLocationController.text = widget.initialStartPoint!;
+      final init = widget.initialStartPoint!.trim();
+      if (!init.startsWith('Location (') && !RegExp(r'^\s*\(?\s*\d+\.\d+').hasMatch(init)) {
+        currentLocationController.text = init;
       }
     }
     if (widget.initialDestination != null && widget.initialDestination!.isNotEmpty) {
@@ -129,41 +133,13 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
 
       // Reverse geocode if start location text is empty or contains raw coordinate pattern
       final currentText = currentLocationController.text.trim();
-      if (currentText.isEmpty || currentText.startsWith('Location (') || currentText.contains(RegExp(r'\d+\.\d+'))) {
+      if (currentText.isEmpty || currentText.startsWith('Location (') || RegExp(r'^\s*\(?\s*\d+\.\d+').hasMatch(currentText)) {
         try {
-          final placemarks = await _geocoding.placemarkFromCoordinates(
-            position.latitude,
-            position.longitude,
-          );
-          if (placemarks.isNotEmpty && mounted) {
-            final p = placemarks[0];
-            final parts = <String>[];
-            final area = (p.subLocality != null && p.subLocality!.isNotEmpty)
-                ? p.subLocality!
-                : (p.street != null && p.street!.isNotEmpty && !p.street!.contains('+') && p.street != p.name)
-                    ? p.street!
-                    : (p.name != null && p.name!.isNotEmpty && !p.name!.contains('+'))
-                        ? p.name!
-                        : null;
-            if (area != null && area.isNotEmpty) parts.add(area);
-
-            final city = (p.locality != null && p.locality!.isNotEmpty)
-                ? p.locality!
-                : (p.subAdministrativeArea != null && p.subAdministrativeArea!.isNotEmpty)
-                    ? p.subAdministrativeArea!
-                    : null;
-            if (city != null && city.isNotEmpty && !parts.contains(city)) parts.add(city);
-
-            if (p.administrativeArea != null && p.administrativeArea!.isNotEmpty && !parts.contains(p.administrativeArea)) {
-              parts.add(p.administrativeArea!);
-            }
-
-            final placeName = parts.isNotEmpty ? parts.join(', ') : '';
-            if (placeName.isNotEmpty) {
-              setState(() {
-                currentLocationController.text = placeName;
-              });
-            }
+          final placeName = await TripApi.reverseGeocode(position.latitude, position.longitude);
+          if (placeName.isNotEmpty && mounted) {
+            setState(() {
+              currentLocationController.text = placeName;
+            });
           }
         } catch (_) {}
 
@@ -235,29 +211,36 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
     );
   }
 
-  Future<void> _fitRouteBounds() async {
+  Future<void> _fitRouteBounds({List<LatLng>? points}) async {
     if (!mounted || mapController == null) return;
     if (currentLocation == null || selectedDestination == null) return;
 
-    final southWest = LatLng(
-      min(currentLocation!.latitude, selectedDestination!.latitude),
-      min(currentLocation!.longitude, selectedDestination!.longitude),
-    );
-    final northEast = LatLng(
-      max(currentLocation!.latitude, selectedDestination!.latitude),
-      max(currentLocation!.longitude, selectedDestination!.longitude),
-    );
+    double minLat = min(currentLocation!.latitude, selectedDestination!.latitude);
+    double maxLat = max(currentLocation!.latitude, selectedDestination!.latitude);
+    double minLng = min(currentLocation!.longitude, selectedDestination!.longitude);
+    double maxLng = max(currentLocation!.longitude, selectedDestination!.longitude);
 
-    final bounds = LatLngBounds(southwest: southWest, northeast: northEast);
+    if (points != null && points.isNotEmpty) {
+      for (final p in points) {
+        if (p.latitude < minLat) minLat = p.latitude;
+        if (p.latitude > maxLat) maxLat = p.latitude;
+        if (p.longitude < minLng) minLng = p.longitude;
+        if (p.longitude > maxLng) maxLng = p.longitude;
+      }
+    }
+
+    final bounds = LatLngBounds(
+      southwest: LatLng(minLat, minLng),
+      northeast: LatLng(maxLat, maxLng),
+    );
     try {
       await mapController!.animateCamera(
-        CameraUpdate.newLatLngBounds(bounds, 80),
+        CameraUpdate.newLatLngBounds(bounds, 75),
       );
     } catch (_) {
-      // Fallback center
       final center = LatLng(
-        (currentLocation!.latitude + selectedDestination!.latitude) / 2,
-        (currentLocation!.longitude + selectedDestination!.longitude) / 2,
+        (minLat + maxLat) / 2,
+        (minLng + maxLng) / 2,
       );
       await _updateMapCamera(center, zoom: 8);
     }
@@ -401,15 +384,20 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
     _drawRoute();
   }
 
-  void _drawRoute() {
+  Future<void> _drawRoute() async {
     if (currentLocation == null || selectedDestination == null) return;
 
-    final distance = _calculateDistance(currentLocation!, selectedDestination!);
-    final time = _estimateTravelTime(distance);
+    final start = currentLocation!;
+    final dest = selectedDestination!;
+
+    // Initial instant preview calculations
+    final initialDistance = _calculateDistance(start, dest);
+    final initialTime = _estimateTravelTime(initialDistance);
 
     setState(() {
-      distanceInKm = distance;
-      travelTime = time;
+      isCalculatingRoute = true;
+      distanceInKm = initialDistance;
+      travelTime = initialTime;
 
       markers.clear();
       _addCurrentLocationMarker();
@@ -418,35 +406,23 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
       markers.add(
         Marker(
           markerId: const MarkerId('destination'),
-          position: selectedDestination!,
+          position: dest,
           infoWindow: InfoWindow(
             title: destinationController.text.isNotEmpty
                 ? destinationController.text
                 : 'Destination',
-            snippet: '${distance.toStringAsFixed(1)} km away • ${time.inHours > 0 ? "${time.inHours}h ${time.inMinutes % 60}m" : "${time.inMinutes} mins"}',
+            snippet: '${initialDistance.toStringAsFixed(1)} km away • ${_formatTravelTime(initialTime)}',
           ),
           icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
         ),
       );
 
-      // Route Polyline (Google Maps Blue)
-      polylines.clear();
-      polylines.add(
-        Polyline(
-          polylineId: const PolylineId('route_preview'),
-          points: [currentLocation!, selectedDestination!],
-          color: const Color(0xFF4285F4),
-          width: 5,
-          geodesic: true,
-        ),
-      );
-
-      // Highlight Radius Circle (500m & 1km radius like Google Maps destination highlight)
+      // Highlight Radius Circle (500m & 1.2km radius like Google Maps destination highlight)
       circles.clear();
       circles.add(
         Circle(
           circleId: const CircleId('radius_inner'),
-          center: selectedDestination!,
+          center: dest,
           radius: 500,
           fillColor: const Color(0xFF4285F4).withValues(alpha: 0.15),
           strokeColor: const Color(0xFF4285F4).withValues(alpha: 0.6),
@@ -456,7 +432,7 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
       circles.add(
         Circle(
           circleId: const CircleId('radius_outer'),
-          center: selectedDestination!,
+          center: dest,
           radius: 1200,
           fillColor: const Color(0xFF4285F4).withValues(alpha: 0.05),
           strokeColor: const Color(0xFF4285F4).withValues(alpha: 0.3),
@@ -466,6 +442,55 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
     });
 
     _fitRouteBounds();
+
+    try {
+      // Fetch actual road highway route using Google Maps Directions API (or high-speed OSRM fallback)
+      final routeResult = await RoadRoutingService.getDrivingRoute(start, dest);
+      if (!mounted) return;
+
+      setState(() {
+        isCalculatingRoute = false;
+        distanceInKm = routeResult.distanceKm;
+        travelTime = routeResult.duration;
+
+        // Actual road route polyline (Google Maps Blue with smooth joints and end caps)
+        polylines.clear();
+        polylines.add(
+          Polyline(
+            polylineId: const PolylineId('route_preview'),
+            points: routeResult.points,
+            color: const Color(0xFF4285F4),
+            width: 6,
+            jointType: JointType.round,
+            startCap: Cap.roundCap,
+            endCap: Cap.roundCap,
+            geodesic: true,
+          ),
+        );
+
+        // Update destination marker info window with exact road driving distance & duration
+        markers.removeWhere((m) => m.markerId.value == 'destination');
+        markers.add(
+          Marker(
+            markerId: const MarkerId('destination'),
+            position: dest,
+            infoWindow: InfoWindow(
+              title: destinationController.text.isNotEmpty
+                  ? destinationController.text
+                  : 'Destination',
+              snippet: '${routeResult.distanceKm.toStringAsFixed(1)} km by road • ${_formatTravelTime(routeResult.duration)}',
+            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+          ),
+        );
+      });
+
+      _fitRouteBounds(points: routeResult.points);
+    } catch (e) {
+      if (mounted) {
+        setState(() => isCalculatingRoute = false);
+      }
+    }
   }
 
   double _calculateDistance(LatLng start, LatLng end) {
@@ -854,7 +879,16 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                                   color: const Color(0xFF4285F4).withValues(alpha: 0.12),
                                   borderRadius: BorderRadius.circular(10),
                                 ),
-                                child: const Icon(Icons.directions_car_rounded, color: Color(0xFF4285F4), size: 22),
+                                child: isCalculatingRoute
+                                    ? const SizedBox(
+                                        width: 22,
+                                        height: 22,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2.2,
+                                          color: Color(0xFF4285F4),
+                                        ),
+                                      )
+                                    : const Icon(Icons.directions_car_rounded, color: Color(0xFF4285F4), size: 22),
                               ),
                               const SizedBox(width: 12),
                               Column(
@@ -869,7 +903,9 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                                     ),
                                   ),
                                   Text(
-                                    '${distanceInKm!.toStringAsFixed(1)} km • Fastest route',
+                                    isCalculatingRoute
+                                        ? 'Finding actual road route...'
+                                        : '${distanceInKm!.toStringAsFixed(1)} km • Fastest road route',
                                     style: const TextStyle(
                                       fontSize: 12,
                                       fontWeight: FontWeight.w500,

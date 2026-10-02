@@ -2,6 +2,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../services/karnataka_places.dart';
+import '../services/road_routing_service.dart';
 
 class Hotel {
   final String id;
@@ -445,18 +446,6 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
     setState(() {
       selectedHotel = hotel;
 
-      // Draw polyline route from user present place to hotel
-      routeToHotel = Polyline(
-        polylineId: const PolylineId('hotel_route'),
-        points: [
-          widget.userLocation,
-          LatLng(hotel.latitude, hotel.longitude),
-        ],
-        color: const Color(0xFF1E8E3E), // Google Maps Green
-        width: 5,
-        geodesic: true,
-      );
-
       // Draw radius circle around hotel
       radiusCircles.clear();
       radiusCircles.add(
@@ -480,6 +469,30 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
         ),
       );
     });
+
+    _updateHotelMarkers();
+
+    // Fetch actual driving road route to the selected hotel
+    try {
+      final routeResult = await RoadRoutingService.getDrivingRoute(
+        widget.userLocation,
+        LatLng(hotel.latitude, hotel.longitude),
+      );
+      if (mounted && selectedHotel?.id == hotel.id) {
+        setState(() {
+          routeToHotel = Polyline(
+            polylineId: const PolylineId('hotel_route'),
+            points: routeResult.points,
+            color: const Color(0xFF1E8E3E), // Google Maps Green
+            width: 5,
+            jointType: JointType.round,
+            startCap: Cap.roundCap,
+            endCap: Cap.roundCap,
+            geodesic: true,
+          );
+        });
+      }
+    } catch (_) {}
 
     _updateHotelMarkers();
 
