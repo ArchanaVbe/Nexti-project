@@ -15,6 +15,10 @@ import '../models/trip_plan_models.dart';
 import '../widgets/hotel_map_picker.dart';
 import 'google_maps_selection.dart';
 import 'hotel_booking_maps.dart';
+import '../widgets/google_maps_icon.dart';
+import '../services/road_routing_service.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 
 /// Automatically capitalizes the first letter of entered text
 class FirstLetterCapitalizationFormatter extends TextInputFormatter {
@@ -97,6 +101,15 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   String? _groupSizeError;
   String? _stepWarningMessage;
   int _maxStepReached = 1;
+
+  // Half-page Route Map preview variables for Steps 2, 3, 4, 5
+  GoogleMapController? _routeMapController;
+  final Set<Marker> _routeMarkers = {};
+  final Set<Polyline> _routePolylines = {};
+  List<LatLng> _routePoints = [];
+  String? _routeDistanceText;
+  String? _routeDurationText;
+  bool _isLoadingRoute = false;
 
   DateTime? _parseDate(String text) {
     try {
@@ -1188,9 +1201,6 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   bool _validateStep1({bool showWarning = false}) {
     bool hasError = false;
     String? destErr;
-    String? startErr;
-    String? endErr;
-    String? groupErr;
 
     final destText = _destinationController.text.trim();
     if (destText.isEmpty) {
@@ -1200,6 +1210,28 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       destErr = 'Destination must be within 100 characters';
       hasError = true;
     }
+
+    setState(() {
+      _destinationError = destErr;
+      if (hasError && showWarning) {
+        _stepWarningMessage = 'Please enter a destination city first.';
+      } else if (!hasError) {
+        _stepWarningMessage = null;
+      }
+    });
+
+    if (hasError && showWarning) {
+      _showFillPreviousWarning('Please enter a destination city first.');
+    }
+
+    return !hasError;
+  }
+
+  bool _validateStepDates({bool showWarning = false}) {
+    bool hasError = false;
+    String? startErr;
+    String? endErr;
+    String? groupErr;
 
     final startText = _startDateController.text.trim();
     if (startText.isEmpty) {
@@ -1231,19 +1263,18 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     }
 
     setState(() {
-      _destinationError = destErr;
       _startDateError = startErr;
       _endDateError = endErr;
       _groupSizeError = groupErr;
       if (hasError && showWarning) {
-        _stepWarningMessage = 'Please fill previous sections first.';
+        _stepWarningMessage = 'Please select travel dates and group details.';
       } else if (!hasError) {
         _stepWarningMessage = null;
       }
     });
 
     if (hasError && showWarning) {
-      _showFillPreviousWarning();
+      _showFillPreviousWarning('Please select travel dates and group details.');
     }
 
     return !hasError;
@@ -1288,8 +1319,16 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       return;
     }
 
-    // User is tapping 2, 3, or 4 without completing step 1
+    // Must validate step 1 if moving past it
     if (!_validateStep1(showWarning: true)) {
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(0);
+      }
+      return;
+    }
+
+    // Must validate step 2 if moving past it
+    if (targetStep > 2 && !_validateStepDates(showWarning: true)) {
       if (_scrollController.hasClients) {
         _scrollController.jumpTo(0);
       }
@@ -1311,7 +1350,9 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     if (_currentStep == 1) {
       _fetchPlacesViaBackend(_destinationController.text.trim());
       await _syncTripToFirestore();
-    } else if ((_isHost && _currentStep == 3) || (!_isHost && _currentStep == 2)) {
+    } else if (_currentStep == 2) {
+      await _syncTripToFirestore();
+    } else if ((_isHost && _currentStep == 4) || (!_isHost && _currentStep == 3)) {
       await _syncPreferencesToFirestore();
     }
 
@@ -1328,13 +1369,16 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     }
   }
 
+
   Widget _buildStepIndicator(String label, String number, bool isActive, bool isDark, int stepIndex) {
+    final bool isCompleted = stepIndex < _currentStep;
     return GestureDetector(
       onTap: () => _onStepTapped(stepIndex),
       behavior: HitTestBehavior.opaque,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
+      child: SizedBox(
+        width: 52,
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Container(
               width: 32,
@@ -1344,25 +1388,36 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                     ? const Color(0xFF6366F1)
                     : (isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9)),
                 shape: BoxShape.circle,
-                border: !isActive && isDark
-                    ? Border.all(color: const Color(0xFF334155))
-                    : null,
-              ),
-              child: Center(
-                child: Text(
-                  number,
-                  style: TextStyle(
-                    color: isActive ? Colors.white : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF94A3B8)),
-                    fontWeight: FontWeight.bold,
-                  ),
+                border: Border.all(
+                  color: isActive
+                      ? const Color(0xFF6366F1)
+                      : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                  width: 1.5,
                 ),
               ),
+              child: Center(
+                child: isCompleted
+                    ? const Icon(Icons.check_rounded, size: 16, color: Colors.white)
+                    : Text(
+                        number,
+                        style: TextStyle(
+                          color: isActive
+                              ? Colors.white
+                              : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF94A3B8)),
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                        ),
+                      ),
+              ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             Text(
               label,
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: 12,
+                fontSize: 10,
                 color: isActive
                     ? (isDark ? const Color(0xFF818CF8) : const Color(0xFF6366F1))
                     : (isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8)),
@@ -1702,6 +1757,302 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     );
   }
 
+  Future<void> _fetchRouteForMap() async {
+    final destText = _destinationController.text.trim();
+    if (destText.isEmpty) return;
+
+    LatLng? destPos;
+    if (_selectedCityLat != null && _selectedCityLng != null) {
+      destPos = LatLng(_selectedCityLat!, _selectedCityLng!);
+    } else {
+      final resolved = KarnatakaPlacesRegistry.resolvePlace(destText);
+      if (resolved != null) {
+        destPos = LatLng(resolved.lat, resolved.lng);
+      }
+    }
+    destPos ??= const LatLng(15.3350, 76.4600); // Default Karnataka/Hampi
+
+    LatLng? startPos;
+    final startText = _startPointController.text.trim();
+    if (startText.isNotEmpty) {
+      final resolved = KarnatakaPlacesRegistry.resolvePlace(startText);
+      if (resolved != null) {
+        startPos = LatLng(resolved.lat, resolved.lng);
+      }
+    }
+    startPos ??= const LatLng(12.9716, 77.5946); // Default Bengaluru
+
+    setState(() {
+      _isLoadingRoute = true;
+    });
+
+    try {
+      final result = await RoadRoutingService.getDrivingRoute(startPos, destPos);
+      if (!mounted) return;
+
+      final startLabel = startText.isNotEmpty ? startText.split(',').first.trim() : 'Present Location';
+      final destLabel = destText.isNotEmpty ? destText.split(',').first.trim() : 'Destination';
+
+      setState(() {
+        _isLoadingRoute = false;
+        _routePoints = result.points;
+        _routeDistanceText = result.distanceText ?? '${result.distanceKm.toStringAsFixed(1)} km';
+        _routeDurationText = result.durationText ?? _formatTravelDuration(result.duration);
+
+        _routeMarkers.clear();
+        _routeMarkers.add(
+          Marker(
+            markerId: const MarkerId('start'),
+            position: startPos!,
+            infoWindow: InfoWindow(title: startLabel),
+            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+          ),
+        );
+        _routeMarkers.add(
+          Marker(
+            markerId: const MarkerId('destination'),
+            position: destPos!,
+            infoWindow: InfoWindow(title: destLabel),
+            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+          ),
+        );
+
+        _routePolylines.clear();
+        _routePolylines.add(
+          Polyline(
+            polylineId: const PolylineId('route_preview'),
+            points: result.points,
+            color: const Color(0xFF4285F4),
+            width: 5,
+            jointType: JointType.round,
+            startCap: Cap.roundCap,
+            endCap: Cap.roundCap,
+          ),
+        );
+      });
+
+      _fitRouteMapBounds();
+    } catch (e) {
+      debugPrint('Error fetching route for map preview: $e');
+      if (mounted) {
+        setState(() {
+          _isLoadingRoute = false;
+        });
+      }
+    }
+  }
+
+  String _formatTravelDuration(Duration d) {
+    final hours = d.inHours;
+    final mins = d.inMinutes.remainder(60);
+    if (hours > 0) {
+      return '$hours hr $mins min';
+    }
+    return '$mins min';
+  }
+
+  void _fitRouteMapBounds() {
+    if (_routeMapController == null || _routePoints.isEmpty) return;
+    double minLat = 90.0, maxLat = -90.0, minLng = 180.0, maxLng = -180.0;
+    for (var p in _routePoints) {
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
+      if (p.longitude < minLng) minLng = p.longitude;
+      if (p.longitude > maxLng) maxLng = p.longitude;
+    }
+    _routeMapController!.animateCamera(
+      CameraUpdate.newLatLngBounds(
+        LatLngBounds(
+          southwest: LatLng(minLat, minLng),
+          northeast: LatLng(maxLat, maxLng),
+        ),
+        40,
+      ),
+    );
+  }
+
+  Widget _buildHalfPageRouteMap(bool isDark) {
+    final startName = _startPointController.text.trim().isNotEmpty
+        ? _startPointController.text.split(',').first.trim()
+        : 'Present Location';
+    final destName = _destinationController.text.trim().isNotEmpty
+        ? _destinationController.text.split(',').first.trim()
+        : 'Destination';
+
+    final initialCenter = _routePoints.isNotEmpty
+        ? _routePoints[_routePoints.length ~/ 2]
+        : ((_selectedCityLat != null && _selectedCityLng != null)
+            ? LatLng(_selectedCityLat!, _selectedCityLng!)
+            : const LatLng(14.4644, 75.9218));
+
+    return Container(
+      width: double.infinity,
+      height: 240,
+      margin: const EdgeInsets.only(bottom: 20),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1E293B) : Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+          width: 1.2,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: isDark ? 0.35 : 0.08),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(19),
+        child: Stack(
+          children: [
+            GoogleMap(
+              initialCameraPosition: CameraPosition(
+                target: initialCenter,
+                zoom: 7.2,
+              ),
+              onMapCreated: (controller) {
+                _routeMapController = controller;
+                if (_routePoints.isNotEmpty) {
+                  _fitRouteMapBounds();
+                } else {
+                  _fetchRouteForMap();
+                }
+              },
+              markers: _routeMarkers,
+              polylines: _routePolylines,
+              zoomControlsEnabled: false,
+              myLocationButtonEnabled: false,
+              compassEnabled: false,
+              mapToolbarEnabled: false,
+              gestureRecognizers: {
+                Factory<OneSequenceGestureRecognizer>(() => EagerGestureRecognizer()),
+              },
+            ),
+
+            if (_isLoadingRoute)
+              Container(
+                color: Colors.black.withValues(alpha: 0.25),
+                child: const Center(
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    color: Color(0xFF6366F1),
+                  ),
+                ),
+              ),
+
+            // Top-left Route badge overlay
+            Positioned(
+              top: 12,
+              left: 12,
+              right: 12,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: (isDark ? const Color(0xFF0F172A) : Colors.white).withValues(alpha: 0.92),
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.15),
+                            blurRadius: 6,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.route_rounded, size: 16, color: Color(0xFF4285F4)),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              '$startName ➔ $destName',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: isDark ? Colors.white : const Color(0xFF0F172A),
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (_routeDurationText != null) ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF4285F4).withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                _routeDurationText!,
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF4285F4),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  InkWell(
+                    onTap: _openGoogleMapsSelection,
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: (isDark ? const Color(0xFF0F172A) : Colors.white).withValues(alpha: 0.92),
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.15),
+                            blurRadius: 6,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: const GoogleMapsIcon(size: 18),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Bottom subtle distance indicator
+            if (_routeDistanceText != null && !_isLoadingRoute)
+              Positioned(
+                bottom: 10,
+                right: 12,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: (isDark ? const Color(0xFF0F172A) : Colors.white).withValues(alpha: 0.88),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    '$_routeDistanceText driving route',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildStep1(bool isDark) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1743,9 +2094,17 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             color: isDark ? Colors.white : const Color(0xFF0F172A),
           ),
         ),
+        const SizedBox(height: 6),
+        Text(
+          'Set your destination and hotel stay to begin planning',
+          style: TextStyle(
+            fontSize: 13,
+            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+          ),
+        ),
         const SizedBox(height: 24),
         _buildTextField(
-          label: 'Trip Name (Optional)',
+          label: 'Trip Name',
           hint: 'e.g. Karnataka Gateway Tour',
           icon: Icons.bookmark_border_rounded,
           controller: _tripNameController,
@@ -1764,7 +2123,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           textCapitalization: TextCapitalization.sentences,
           onPrefixIconTap: _openGoogleMapsSelection,
           suffixIcon: IconButton(
-            icon: const Icon(Icons.map_rounded, color: Color(0xFF4285F4)),
+            icon: const GoogleMapsIcon(size: 24),
             tooltip: 'Select on Google Maps',
             onPressed: _openGoogleMapsSelection,
           ),
@@ -1775,7 +2134,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           aboveFieldWidget: (_citySuggestions.isNotEmpty || _isSearchingCity)
               ? Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
+                  mainAxisSize: modernWebSearchCityPadding(),
                   children: [
                     if (_isSearchingCity)
                       Padding(
@@ -1881,7 +2240,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.directions_rounded, size: 14, color: Color(0xFF4285F4)),
+                      GoogleMapsIcon(size: 16),
                       SizedBox(width: 6),
                       Text(
                         'Select route & destination on Google Maps',
@@ -1898,6 +2257,158 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             ],
           ),
         ),
+        _buildTextField(
+          label: 'Hotel / Stay (Booked or Planning)',
+          hint: 'e.g. Royal Orchid Resort, Homestay, or pick on map',
+          icon: Icons.hotel_outlined,
+          controller: _hotelController,
+          isDark: isDark,
+          textCapitalization: TextCapitalization.words,
+          onChanged: _onHotelChanged,
+          onPrefixIconTap: _openHotelMapPicker,
+          onTap: () {
+            if (_hotelController.text.trim().isEmpty) {
+              _openHotelMapPicker();
+            }
+          },
+          suffixIcon: IconButton(
+            icon: const GoogleMapsIcon(size: 24),
+            tooltip: 'Choose on Google Maps',
+            onPressed: _openHotelMapPicker,
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 0, bottom: 14, left: 4),
+          child: Row(
+            children: [
+              OutlinedButton.icon(
+                onPressed: _openHotelMapPicker,
+                icon: const GoogleMapsIcon(size: 16),
+                label: const Text(
+                  'Choose Hotel on Google Maps',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF6366F1)),
+                ),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Color(0xFF6366F1), width: 1.2),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  minimumSize: const Size(0, 32),
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (_isSearchingHotel) ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12, left: 4),
+            child: Row(
+              children: [
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF6366F1)),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Searching hotel suggestions...',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (_hotelSuggestions.isNotEmpty) ...[
+          Container(
+            margin: const EdgeInsets.only(top: 0, bottom: 16),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.35),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.08),
+                  blurRadius: 8,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 260),
+              child: ListView.separated(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: _hotelSuggestions.length,
+                separatorBuilder: (context, index) => Divider(
+                  height: 1,
+                  thickness: 0.5,
+                  color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.08),
+                ),
+                itemBuilder: (context, index) {
+                  final sugg = _hotelSuggestions[index];
+                  return ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.hotel_rounded, size: 18, color: Color(0xFF6366F1)),
+                    title: Text(
+                      sugg.description,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: isDark ? Colors.white : const Color(0xFF0F172A),
+                      ),
+                    ),
+                    onTap: () async {
+                      final cleanName = sugg.description.split(',').first.trim();
+                      setState(() {
+                        _hotelController.text = cleanName;
+                        _hotelSuggestions = [];
+                        _isSearchingHotel = false;
+                      });
+                      try {
+                        final res = await TripApi.resolveCity(sugg.placeId);
+                        _hotelLat = res.lat;
+                        _hotelLng = res.lng;
+                      } catch (_) {}
+                    },
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
+        const SizedBox(height: 30),
+      ],
+    );
+  }
+
+  MainAxisSize modernWebSearchCityPadding() => MainAxisSize.min;
+
+  Widget _buildStepDates(bool isDark) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildHalfPageRouteMap(isDark),
+        Text(
+          'Dates & Travel',
+          style: TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            color: isDark ? Colors.white : const Color(0xFF0F172A),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'Select your travel dates, starting point and group details',
+          style: TextStyle(
+            fontSize: 13,
+            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+          ),
+        ),
+        const SizedBox(height: 24),
         _buildTextField(
           label: 'Start Date',
           hint: 'Select start date',
@@ -2046,129 +2557,6 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             ),
           ),
         ],
-        _buildTextField(
-          label: 'Hotel / Stay (Booked or Planning)',
-          hint: 'e.g. Royal Orchid Resort, Homestay, or pick on map',
-          icon: Icons.hotel_outlined,
-          controller: _hotelController,
-          isDark: isDark,
-          textCapitalization: TextCapitalization.words,
-          onChanged: _onHotelChanged,
-          onPrefixIconTap: _openHotelMapPicker,
-          onTap: () {
-            if (_hotelController.text.trim().isEmpty) {
-              _openHotelMapPicker();
-            }
-          },
-          suffixIcon: IconButton(
-            icon: const Icon(Icons.map_rounded, color: Color(0xFF6366F1)),
-            tooltip: 'Choose on Google Maps',
-            onPressed: _openHotelMapPicker,
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.only(top: 0, bottom: 14, left: 4),
-          child: Row(
-            children: [
-              OutlinedButton.icon(
-                onPressed: _openHotelMapPicker,
-                icon: const Icon(Icons.hotel_rounded, size: 15, color: Color(0xFF6366F1)),
-                label: const Text(
-                  'Choose Hotel on Google Maps',
-                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF6366F1)),
-                ),
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Color(0xFF6366F1), width: 1.2),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                  minimumSize: const Size(0, 32),
-                ),
-              ),
-            ],
-          ),
-        ),
-        if (_isSearchingHotel) ...[
-          Padding(
-            padding: const EdgeInsets.only(bottom: 12, left: 4),
-            child: Row(
-              children: [
-                const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF6366F1)),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  'Searching hotel suggestions...',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-        if (_hotelSuggestions.isNotEmpty) ...[
-          Container(
-            margin: const EdgeInsets.only(top: 0, bottom: 16),
-            decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF1E293B) : Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: const Color(0xFF6366F1).withValues(alpha: 0.35),
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.08),
-                  blurRadius: 8,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 260),
-              child: ListView.separated(
-                shrinkWrap: true,
-                padding: EdgeInsets.zero,
-                itemCount: _hotelSuggestions.length,
-                separatorBuilder: (context, index) => Divider(
-                  height: 1,
-                  thickness: 0.5,
-                  color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.08),
-                ),
-                itemBuilder: (context, index) {
-                  final sugg = _hotelSuggestions[index];
-                  return ListTile(
-                    dense: true,
-                    leading: const Icon(Icons.hotel_rounded, size: 18, color: Color(0xFF6366F1)),
-                    title: Text(
-                      sugg.description,
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: isDark ? Colors.white : const Color(0xFF0F172A),
-                      ),
-                    ),
-                    onTap: () async {
-                      final cleanName = sugg.description.split(',').first.trim();
-                      setState(() {
-                        _hotelController.text = cleanName;
-                        _hotelSuggestions = [];
-                        _isSearchingHotel = false;
-                      });
-                      try {
-                        final res = await TripApi.resolveCity(sugg.placeId);
-                        _hotelLat = res.lat;
-                        _hotelLng = res.lng;
-                      } catch (_) {}
-                    },
-                  );
-                },
-              ),
-            ),
-          ),
-        ],
         _buildTravelModeSelector(isDark),
         _buildTextField(
           label: 'Group Size',
@@ -2203,6 +2591,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       ],
     );
   }
+
 
   IconData _getCategoryIconByName(String cat) {
     switch (cat.toLowerCase()) {
@@ -2257,6 +2646,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        _buildHalfPageRouteMap(isDark),
         if (_approvedMemberCount > 1 || !_isHost) ...[
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -2680,6 +3070,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        _buildHalfPageRouteMap(isDark),
         if (_approvedMemberCount > 1 || _groupPlaces.isNotEmpty) ...[
           Container(
             margin: const EdgeInsets.fromLTRB(20, 16, 20, 8),
@@ -2786,6 +3177,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        _buildHalfPageRouteMap(isDark),
         Text(
           'Group Planning & QR Invite',
           style: TextStyle(
@@ -3011,10 +3403,13 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     return Expanded(
       child: Container(
         height: 2,
-        color: isActive
-            ? const Color(0xFF6366F1)
-            : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
-        margin: const EdgeInsets.only(bottom: 24, left: 8, right: 8),
+        margin: const EdgeInsets.only(bottom: 18, left: 2, right: 2),
+        decoration: BoxDecoration(
+          color: isActive
+              ? const Color(0xFF6366F1)
+              : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+          borderRadius: BorderRadius.circular(1),
+        ),
       ),
     );
   }
@@ -3022,26 +3417,30 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   Widget _buildStepper(bool isDark) {
     if (_isHost) {
       return Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildStepIndicator('Details', '1', _currentStep >= 1, isDark, 1),
           _buildStepDivider(_currentStep >= 2, isDark),
-          _buildStepIndicator('Group', '2', _currentStep >= 2, isDark, 2),
+          _buildStepIndicator('Dates', '2', _currentStep >= 2, isDark, 2),
           _buildStepDivider(_currentStep >= 3, isDark),
-          _buildStepIndicator('Preferences', '3', _currentStep >= 3, isDark, 3),
+          _buildStepIndicator('Group', '3', _currentStep >= 3, isDark, 3),
           _buildStepDivider(_currentStep >= 4, isDark),
-          _buildStepIndicator('Show trip', '4', _currentStep >= 4, isDark, 4),
+          _buildStepIndicator('Places', '4', _currentStep >= 4, isDark, 4),
+          _buildStepDivider(_currentStep >= 5, isDark),
+          _buildStepIndicator('Plan', '5', _currentStep >= 5, isDark, 5),
         ],
       );
     } else {
       return Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildStepIndicator('Details', '1', _currentStep >= 1, isDark, 1),
           _buildStepDivider(_currentStep >= 2, isDark),
-          _buildStepIndicator('Preferences', '2', _currentStep >= 2, isDark, 2),
+          _buildStepIndicator('Dates', '2', _currentStep >= 2, isDark, 2),
           _buildStepDivider(_currentStep >= 3, isDark),
-          _buildStepIndicator('Show trip', '3', _currentStep >= 3, isDark, 3),
+          _buildStepIndicator('Places', '3', _currentStep >= 3, isDark, 3),
+          _buildStepDivider(_currentStep >= 4, isDark),
+          _buildStepIndicator('Plan', '4', _currentStep >= 4, isDark, 4),
         ],
       );
     }
@@ -3053,10 +3452,12 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         case 1:
           return _buildStep1(isDark);
         case 2:
-          return _buildStep4(isDark);
+          return _buildStepDates(isDark);
         case 3:
-          return _buildStep2(isDark);
+          return _buildStep4(isDark);
         case 4:
+          return _buildStep2(isDark);
+        case 5:
         default:
           return _buildStep3(isDark);
       }
@@ -3065,13 +3466,16 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         case 1:
           return _buildStep1(isDark);
         case 2:
-          return _buildStep2(isDark);
+          return _buildStepDates(isDark);
         case 3:
+          return _buildStep2(isDark);
+        case 4:
         default:
           return _buildStep3(isDark);
       }
     }
   }
+
 
   Future<void> _saveTrip() async {
     final prefs = await SharedPreferences.getInstance();
@@ -3174,7 +3578,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final int maxSteps = _isHost ? 4 : 3;
+    final int maxSteps = _isHost ? 5 : 4;
     final bool isLastStep = _currentStep == maxSteps;
 
     return Scaffold(
@@ -3313,7 +3717,12 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
                         _fetchPlacesViaBackend(_destinationController.text.trim());
                         await _syncTripToFirestore();
-                      } else if ((_isHost && _currentStep == 3) || (!_isHost && _currentStep == 2)) {
+                      } else if (_currentStep == 2) {
+                        if (!_validateStepDates(showWarning: false)) {
+                          return;
+                        }
+                        await _syncTripToFirestore();
+                      } else if ((_isHost && _currentStep == 4) || (!_isHost && _currentStep == 3)) {
                         await _syncPreferencesToFirestore();
                         // Step 7: Generate AI Daily Itinerary with Routes and Opening hours
                         _generateItineraryViaBackend();
@@ -3332,6 +3741,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                       await _saveTrip();
                     }
                   },
+
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF6366F1),
                     shape: RoundedRectangleBorder(

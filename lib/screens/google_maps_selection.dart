@@ -896,77 +896,54 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF4285F4).withValues(alpha: 0.12),
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: isCalculatingRoute
-                                    ? const SizedBox(
-                                        width: 22,
-                                        height: 22,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2.2,
-                                          color: Color(0xFF4285F4),
-                                        ),
-                                      )
-                                    : const Icon(Icons.directions_car_rounded, color: Color(0xFF4285F4), size: 22),
-                              ),
-                              const SizedBox(width: 12),
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    _formatTravelTime(travelTime!),
-                                    style: TextStyle(
-                                      fontSize: 20,
-                                      fontWeight: FontWeight.w800,
-                                      color: isDark ? const Color(0xFF4ADE80) : const Color(0xFF1E8E3E), // Green travel time
-                                    ),
-                                  ),
-                                  Text(
-                                    isCalculatingRoute
-                                        ? 'Finding actual road route...'
-                                        : '${distanceInKm!.toStringAsFixed(1)} km • Fastest road route',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w500,
-                                      color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                            padding: const EdgeInsets.all(8),
                             decoration: BoxDecoration(
-                              color: const Color(0xFF4285F4).withValues(alpha: 0.1),
-                              borderRadius: BorderRadius.circular(8),
+                              color: const Color(0xFF4285F4).withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(10),
                             ),
-                            child: const Row(
-                              mainAxisSize: MainAxisSize.min,
+                            child: isCalculatingRoute
+                                ? const SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.2,
+                                      color: Color(0xFF4285F4),
+                                    ),
+                                  )
+                                : const Icon(Icons.directions_car_rounded, color: Color(0xFF4285F4), size: 22),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Icon(Icons.radar_rounded, size: 14, color: Color(0xFF4285F4)),
-                                SizedBox(width: 4),
                                 Text(
-                                  'Radius Active',
+                                  _formatTravelTime(travelTime!),
                                   style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF4285F4),
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w800,
+                                    color: isDark ? const Color(0xFF4ADE80) : const Color(0xFF1E8E3E), // Green travel time
                                   ),
+                                ),
+                                Text(
+                                  isCalculatingRoute
+                                      ? 'Finding actual road route...'
+                                      : '${distanceInKm!.toStringAsFixed(1)} km • Fastest road route',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w500,
+                                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ],
                             ),
                           ),
                         ],
                       ),
+
                     ],
                   ),
                 ),
