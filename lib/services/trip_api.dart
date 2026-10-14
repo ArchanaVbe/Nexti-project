@@ -3,12 +3,15 @@
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:geocoding/geocoding.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/trip_plan_models.dart';
 import 'karnataka_places.dart';
+import 'road_routing_service.dart';
 
 class TripApi {
   // In-memory discover cache: avoids re-fetching places for the same city
@@ -373,6 +376,60 @@ class TripApi {
     );
   }
 
+  /// Resolves any place, address, locality, or city string to coordinates (CityResolution)
+  static Future<CityResolution?> resolveAddressOrPlace(String query) async {
+    final clean = query.trim();
+    if (clean.isEmpty) return null;
+
+    // 1. Instant accurate local resolution from Karnataka registry
+    final local = KarnatakaPlacesRegistry.resolvePlace(clean);
+    if (local != null) return local;
+
+    // 2. Decode osm_ lat/lng if applicable
+    if (clean.startsWith('osm_')) {
+      final parts = clean.split('_');
+      if (parts.length >= 3) {
+        final parsedLat = double.tryParse(parts[1]);
+        final parsedLng = double.tryParse(parts[2]);
+        if (parsedLat != null && parsedLng != null) {
+          final slug = parts.length > 3 ? parts.sublist(3).join(' ') : 'Place';
+          return CityResolution(
+            name: slug,
+            placeId: clean,
+            lat: parsedLat,
+            lng: parsedLng,
+            formattedAddress: '$slug, Karnataka, India',
+          );
+        }
+      }
+    }
+
+    // 3. Native geocoding lookup
+    try {
+      final geocoding = Geocoding();
+      final locations = await geocoding.locationFromAddress('$clean, Karnataka, India')
+          .timeout(const Duration(seconds: 2));
+      if (locations.isNotEmpty) {
+        final first = locations.first;
+        return CityResolution(
+          name: clean.split(',').first.trim(),
+          placeId: 'geo_${first.latitude}_${first.longitude}',
+          lat: first.latitude,
+          lng: first.longitude,
+          formattedAddress: '$clean, Karnataka, India',
+        );
+      }
+    } catch (_) {}
+
+    // 4. Try backend resolution
+    try {
+      final res = await resolveCity(clean);
+      return res;
+    } catch (_) {}
+
+    return null;
+  }
+
   // --------------------------------------------------------------------
   // Step 4 & 5: Discover Places within 70 km and Categorize
   // --------------------------------------------------------------------
@@ -441,7 +498,11 @@ class TripApi {
     List<String>? selectedNames,
     List<PlaceCard>? availablePlaces,
     String start = 'Starting Point',
+    double? startLat,
+    double? startLng,
     String? hotel,
+    double? hotelLat,
+    double? hotelLng,
     String? end,
     String travelMode = 'DRIVE',
     String? sessionToken,
@@ -463,7 +524,11 @@ class TripApi {
               'selected_ids': selectedIds,
               'selected_names': selectedNames,
               'start': start,
+              'start_lat': startLat,
+              'start_lng': startLng,
               'hotel': resolvedHotel,
+              'hotel_lat': hotelLat,
+              'hotel_lng': hotelLng,
               'end': resolvedEnd,
               'travel_mode': travelMode,
               'session_token': sessionToken,
@@ -479,15 +544,19 @@ class TripApi {
       debugPrint('Plan Trip HTTP note: $e');
     }
 
-    // Fallback programmatic schedule if network unavailable
-    return _buildFallbackItineraryPlan(
+    // Intelligent programmatic schedule using Google Maps & road metrics
+    return await _buildIntelligentItineraryPlan(
       tripId: tripId,
       dates: dates,
       selectedIds: selectedIds,
       selectedNames: selectedNames,
       availablePlaces: availablePlaces,
       start: start,
+      startLat: startLat,
+      startLng: startLng,
       hotel: resolvedHotel,
+      hotelLat: hotelLat,
+      hotelLng: hotelLng,
       end: resolvedEnd,
       travelMode: travelMode,
     );
@@ -512,17 +581,82 @@ class TripApi {
     );
   }
 
-  static ItineraryPlan _buildFallbackItineraryPlan({
+  /// Resolves the most accurate geographical coordinate for a place/locality
+  static LatLng _resolvePointLatLng(
+    String rawName, {
+    double? fallbackLat,
+    double? fallbackLng,
+    List<PlaceCard>? availablePlaces,
+  }) {
+    if (fallbackLat != null && fallbackLng != null && fallbackLat != 0.0 && fallbackLng != 0.0) {
+      return LatLng(fallbackLat, fallbackLng);
+    }
+
+    final clean = rawName
+        .replaceAll(RegExp(r'^Start:\s*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'^End:\s*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'^Depart:\s*', caseSensitive: false), '')
+        .trim();
+
+    if (clean.isEmpty) return const LatLng(13.9299, 75.5681); // Default Karnataka center
+
+    // 1. Check in available places
+    if (availablePlaces != null) {
+      for (final p in availablePlaces) {
+        if (p.name.toLowerCase() == clean.toLowerCase() ||
+            p.name.toLowerCase().contains(clean.toLowerCase()) ||
+            clean.toLowerCase().contains(p.name.toLowerCase())) {
+          return LatLng(p.lat, p.lng);
+        }
+      }
+    }
+
+    // 2. Check Karnataka Places Registry
+    final coord = KarnatakaPlacesRegistry.findPlaceCoordinate(clean);
+    if (coord != null) {
+      return LatLng(coord.lat, coord.lng);
+    }
+
+    final resolved = KarnatakaPlacesRegistry.resolvePlace(clean);
+    if (resolved != null) {
+      return LatLng(resolved.lat, resolved.lng);
+    }
+
+    return const LatLng(13.9299, 75.5681);
+  }
+
+  static String _formatTime(int hour24, int minute) {
+    final ampm = (hour24 % 24) < 12 ? 'AM' : 'PM';
+    int h = (hour24 % 24) % 12;
+    if (h == 0) h = 12;
+    final m = minute.toString().padLeft(2, '0');
+    return '${h.toString().padLeft(2, '0')}:$m $ampm';
+  }
+
+  static String _formatDuration(int minutes) {
+    if (minutes < 60) return '${minutes}m';
+    final h = minutes ~/ 60;
+    final m = minutes % 60;
+    return m == 0 ? '${h}h' : '${h}h ${m}m';
+  }
+
+  /// Builds a real-world, human-friendly, distance-aware travel schedule using Google Maps
+  /// and intelligent day/night suitable time slots.
+  static Future<ItineraryPlan> _buildIntelligentItineraryPlan({
     required String tripId,
     required List<String> dates,
     required List<String> selectedIds,
     List<String>? selectedNames,
     List<PlaceCard>? availablePlaces,
     required String start,
+    double? startLat,
+    double? startLng,
     required String hotel,
+    double? hotelLat,
+    double? hotelLng,
     required String end,
     required String travelMode,
-  }) {
+  }) async {
     final safeDates = dates.isNotEmpty ? dates : ['Day 1'];
     final List<DailySchedule> days = [];
 
@@ -549,121 +683,264 @@ class TripApi {
       ]);
     }
 
-    // 2. Distribute places across the days
+    // 2. Distribute places across the days (balanced human-friendly pacing)
     final numDays = safeDates.length;
     final List<List<String>> stopsByDay = List.generate(numDays, (_) => []);
     for (int i = 0; i < resolvedNames.length; i++) {
       stopsByDay[i % numDays].add(resolvedNames[i]);
     }
 
+    // Pre-resolve hotel coordinates
+    final hotelLatLng = _resolvePointLatLng(
+      hotel,
+      fallbackLat: hotelLat,
+      fallbackLng: hotelLng,
+      availablePlaces: availablePlaces,
+    );
+
+    // Pre-resolve start coordinates
+    final startLatLng = _resolvePointLatLng(
+      start,
+      fallbackLat: startLat,
+      fallbackLng: startLng,
+      availablePlaces: availablePlaces,
+    );
+
     for (int i = 0; i < numDays; i++) {
       final dayNumber = i + 1;
       final dateStr = safeDates[i];
       final dayStops = stopsByDay[i];
 
-      // Day 1 starts from user's starting point; Day 2+ starts from hotel!
-      final dayStartPoint = (dayNumber == 1) ? start : hotel;
+      // Day 1 starts from user's starting point; Day 2+ starts from hotel stay!
+      final dayOriginName = (dayNumber == 1) ? start : hotel;
+      final dayOriginLatLng = (dayNumber == 1) ? startLatLng : hotelLatLng;
+
+      // Resolve coordinates for each stop of this day
+      final List<LatLng> stopLatLngs = [];
+      for (final sName in dayStops) {
+        stopLatLngs.add(_resolvePointLatLng(sName, availablePlaces: availablePlaces));
+      }
+
+      // Query Google Maps Directions for accurate road distance and travel times
+      final List<RouteLegInfo> legs = await RoadRoutingService.getMultiStopRoute(
+        origin: dayOriginLatLng,
+        destination: hotelLatLng,
+        waypoints: stopLatLngs,
+        travelMode: travelMode,
+      );
+
       final List<DailyScheduleStop> scheduleStops = [];
 
-      // Morning Start (6:00 AM)
+      // Transit to the first destination
+      final int transitToFirstMins = legs.isNotEmpty ? legs[0].durationMinutes : 25;
+      final double firstLegDistanceKm = legs.isNotEmpty ? legs[0].distanceKm : 12.0;
+
+      // -------------------------------------------------------------
+      // Dynamic, Human-Friendly Departure Time Determination
+      // -------------------------------------------------------------
+      int curHour;
+      int curMin = 0;
+
+      if (dayNumber == 1) {
+        if (transitToFirstMins >= 180) {
+          // Long journey (3+ hours, e.g. Shivamogga to Murudeshwar): Depart early at 06:00 AM
+          curHour = 6;
+          curMin = 0;
+        } else if (transitToFirstMins >= 90) {
+          // Medium journey (1.5 to 3 hours): Depart at 07:00 AM
+          curHour = 7;
+          curMin = 0;
+        } else if (transitToFirstMins >= 45) {
+          // Short journey: Depart at 08:00 AM
+          curHour = 8;
+          curMin = 0;
+        } else {
+          // Local start (< 45 mins): Depart at 08:30 AM
+          curHour = 8;
+          curMin = 30;
+        }
+      } else {
+        // Day 2+ starts from Hotel: 08:30 AM (relaxing wake up and hotel breakfast)
+        curHour = 8;
+        curMin = 30;
+      }
+
+      // 1. Start Stop Card
+      final startNotes = (dayNumber == 1)
+          ? 'Depart by $travelMode • ${_formatDuration(transitToFirstMins)} travel (${firstLegDistanceKm.toStringAsFixed(1)} km)'
+          : 'Depart from hotel after breakfast';
+
       scheduleStops.add(
         DailyScheduleStop(
-          time: '06:00 AM',
+          time: _formatTime(curHour, curMin),
           placeId: 'start_point',
-          name: 'Start: $dayStartPoint',
+          name: (dayNumber == 1) ? 'Start: $dayOriginName' : 'Depart: $dayOriginName',
           activityType: 'start',
           durationMinutes: 15,
-          travelToNextMinutes: 30,
+          travelToNextMinutes: transitToFirstMins,
           openingHours: ['Open 24/7'],
-          notes: 'Depart by $travelMode',
+          notes: startNotes,
         ),
       );
 
-      // Morning Stop 1 (07:00 AM)
-      if (dayStops.isNotEmpty) {
+      // 2. Highway Tea / Refreshment Break for long road trips (> 2.5 hours travel)
+      bool hasHighwayBreak = false;
+      if (dayNumber == 1 && transitToFirstMins >= 150) {
+        hasHighwayBreak = true;
+        final halfTransit = transitToFirstMins ~/ 2;
+        final breakInitialMin = curMin + 15 + halfTransit;
+        final breakHour = curHour + breakInitialMin ~/ 60;
+        final breakMin = breakInitialMin % 60;
+
         scheduleStops.add(
           DailyScheduleStop(
-            time: '07:00 AM',
-            placeId: 'stop_${i}_0',
-            name: dayStops[0],
-            activityType: 'visit',
-            durationMinutes: 90,
-            travelToNextMinutes: 25,
-            openingHours: ['06:00 AM – 06:00 PM'],
-            notes: 'Explore landmarks & capture photos',
+            time: _formatTime(breakHour, breakMin),
+            placeId: 'highway_break',
+            name: 'Highway Refreshment & Tea Break',
+            activityType: 'break',
+            durationMinutes: 25,
+            travelToNextMinutes: transitToFirstMins - halfTransit,
+            openingHours: ['Open 24/7'],
+            notes: 'Restroom, tea/coffee & light breakfast on highway route',
           ),
         );
       }
 
-      // Morning Stop 2 (09:30 AM) if available
-      if (dayStops.length > 1) {
-        scheduleStops.add(
-          DailyScheduleStop(
-            time: '09:30 AM',
-            placeId: 'stop_${i}_1',
-            name: dayStops[1],
-            activityType: 'visit',
-            durationMinutes: 90,
-            travelToNextMinutes: 25,
-            openingHours: ['08:00 AM – 06:00 PM'],
-            notes: 'Sightseeing and local cultural tour',
-          ),
-        );
-      }
+      // Advance clock to exact arrival time at first destination
+      final totalInitialMins = curMin + 15 + transitToFirstMins + (hasHighwayBreak ? 25 : 0);
+      curHour += totalInitialMins ~/ 60;
+      curMin = totalInitialMins % 60;
 
-      // Lunch Break (01:00 PM)
-      scheduleStops.add(
-        DailyScheduleStop(
-          time: '01:00 PM',
-          placeId: 'lunch_break',
-          name: 'Lunch Break & Refreshment',
-          activityType: 'meal',
-          durationMinutes: 60,
-          travelToNextMinutes: 20,
-          openingHours: ['11:30 AM – 10:30 PM'],
-          notes: 'Authentic regional dining & refreshment',
-        ),
-      );
+      // 3. Sequenced Daytime Visits & Realistic Lunch Break
+      bool lunchAdded = false;
 
-      // Afternoon Stop 3+ (02:30 PM onwards)
-      if (dayStops.length > 2) {
-        for (int sIdx = 2; sIdx < dayStops.length; sIdx++) {
-          final pName = dayStops[sIdx];
-          final hour = 2 + (sIdx - 2) * 2;
-          final timeStr = '${hour.toString().padLeft(2, '0')}:30 PM';
+      for (int sIdx = 0; sIdx < dayStops.length; sIdx++) {
+        final stopName = dayStops[sIdx];
+        final legToNext = (sIdx + 1 < legs.length)
+            ? legs[sIdx + 1]
+            : RouteLegInfo(
+                distanceKm: 2.0,
+                durationMinutes: 10,
+                distanceText: '2.0 km',
+                durationText: '10 mins',
+              );
+
+        // Midday Lunch Break (12:45 PM – 02:00 PM window)
+        final timeInMins = curHour * 60 + curMin;
+        if (!lunchAdded && timeInMins >= (12 * 60 + 45) && timeInMins <= (14 * 60 + 30)) {
           scheduleStops.add(
             DailyScheduleStop(
-              time: timeStr,
-              placeId: 'stop_${i}_$sIdx',
-              name: pName,
-              activityType: 'visit',
-              durationMinutes: 90,
-              travelToNextMinutes: 25,
-              openingHours: ['09:00 AM – 07:00 PM'],
-              notes: 'Scenic exploration & photography',
+              time: _formatTime(curHour, curMin),
+              placeId: 'lunch_break',
+              name: 'Lunch & Regional Cuisine Refreshment',
+              activityType: 'meal',
+              durationMinutes: 60,
+              travelToNextMinutes: 10,
+              openingHours: ['11:30 AM – 10:30 PM'],
+              notes: 'Authentic regional dining & relaxing break',
             ),
           );
+          final totalLunchMins = curMin + 60 + 10;
+          curHour += totalLunchMins ~/ 60;
+          curMin = totalLunchMins % 60;
+          lunchAdded = true;
+        }
+
+        // Tailor visit duration to place type
+        int visitDuration = 90;
+        final lower = stopName.toLowerCase();
+        if (lower.contains('beach') || lower.contains('falls') || lower.contains('park') || lower.contains('safari')) {
+          visitDuration = 90;
+        } else if (lower.contains('temple') || lower.contains('gopura') || lower.contains('tower') || lower.contains('monument')) {
+          visitDuration = 75;
+        } else if (lower.contains('sunset') || lower.contains('viewpoint')) {
+          visitDuration = 60;
+        } else if (lower.contains('museum') || lower.contains('palace') || lower.contains('fort')) {
+          visitDuration = 90;
+        }
+
+        scheduleStops.add(
+          DailyScheduleStop(
+            time: _formatTime(curHour, curMin),
+            placeId: 'stop_${i}_$sIdx',
+            name: stopName,
+            activityType: 'visit',
+            durationMinutes: visitDuration,
+            travelToNextMinutes: legToNext.durationMinutes,
+            openingHours: ['06:00 AM – 07:00 PM'],
+            notes: 'Explore landmarks & capture photos • ${_formatDuration(legToNext.durationMinutes)} to next (${legToNext.distanceKm.toStringAsFixed(1)} km)',
+          ),
+        );
+
+        final totalStopMins = curMin + visitDuration + legToNext.durationMinutes;
+        curHour += totalStopMins ~/ 60;
+        curMin = totalStopMins % 60;
+
+        // If lunch wasn't added yet and afternoon progresses past 02:00 PM
+        if (!lunchAdded && curHour >= 14) {
+          scheduleStops.add(
+            DailyScheduleStop(
+              time: _formatTime(curHour, curMin),
+              placeId: 'lunch_break',
+              name: 'Late Lunch & Refreshment Break',
+              activityType: 'meal',
+              durationMinutes: 45,
+              travelToNextMinutes: 10,
+              openingHours: ['11:30 AM – 10:30 PM'],
+              notes: 'Regional dining & afternoon refreshment',
+            ),
+          );
+          final totalLateLunchMins = curMin + 45 + 10;
+          curHour += totalLateLunchMins ~/ 60;
+          curMin = totalLateLunchMins % 60;
+          lunchAdded = true;
         }
       }
 
-      // Night Arrival at Hotel with 6-Hour Sleep Schedule
-      final finalTimeStr = (numDays > 1) ? '12:00 AM' : '08:00 PM';
-      final finalNotes = (numDays > 1)
-          ? 'Route to hotel stay (6-hour sleep schedule: 12:00 AM – 06:00 AM)'
-          : 'Return to resting location';
+      // 4. Dinner Break (around 07:30 PM – 08:30 PM if evening concluded)
+      if (curHour >= 19 && curHour < 21) {
+        scheduleStops.add(
+          DailyScheduleStop(
+            time: _formatTime(curHour, curMin),
+            placeId: 'dinner_break',
+            name: 'Dinner & Evening Relaxation',
+            activityType: 'meal',
+            durationMinutes: 50,
+            travelToNextMinutes: 15,
+            openingHours: ['07:00 PM – 11:00 PM'],
+            notes: 'Authentic local dinner & relaxing evening downtime',
+          ),
+        );
+        final totalDinnerMins = curMin + 50 + 15;
+        curHour += totalDinnerMins ~/ 60;
+        curMin = totalDinnerMins % 60;
+      }
+
+      // 5. Night Arrival at Hotel (09:15 PM – 09:30 PM) with 9-hour restful sleep schedule
+      final hotelArrivalTime = (curHour < 21 || (curHour == 21 && curMin < 15))
+          ? '09:15 PM'
+          : _formatTime(math.min(22, curHour), curMin);
 
       scheduleStops.add(
         DailyScheduleStop(
-          time: finalTimeStr,
+          time: hotelArrivalTime,
           placeId: 'end_point',
           name: 'End: $hotel',
           activityType: 'end',
           durationMinutes: 0,
           travelToNextMinutes: 0,
           openingHours: ['Open 24/7'],
-          notes: finalNotes,
+          notes: (numDays > 1 && dayNumber < numDays)
+              ? 'Hotel check-in & rest (sleep schedule: 10:00 PM – 07:30 AM • 9 hrs rest)'
+              : 'Return to resting location (trip completion)',
         ),
       );
+
+      // Compute actual daily totals from legs
+      int dailyTravelMinutes = legs.fold(0, (sum, l) => sum + l.durationMinutes);
+      double dailyTotalKm = legs.fold(0.0, (sum, l) => sum + l.distanceKm);
+      if (dailyTravelMinutes == 0) dailyTravelMinutes = transitToFirstMins + 30;
+      if (dailyTotalKm == 0) dailyTotalKm = firstLegDistanceKm + 10.0;
 
       days.add(
         DailySchedule(
@@ -671,8 +948,8 @@ class TripApi {
           date: dateStr,
           summary: 'Day $dayNumber: ${dayStops.isNotEmpty ? dayStops.take(2).join(' & ') : "Exploration & Local Sights"}',
           stops: scheduleStops,
-          dailyTotalTravelMinutes: 65,
-          dailyTotalDistanceKm: 32.0,
+          dailyTotalTravelMinutes: dailyTravelMinutes,
+          dailyTotalDistanceKm: double.parse(dailyTotalKm.toStringAsFixed(1)),
         ),
       );
     }

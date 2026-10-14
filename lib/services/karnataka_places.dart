@@ -35,6 +35,26 @@ class KarnatakaPlacesRegistry {
       keywords: ['shimoga', 'shivamogga', 'malnad', 'tunga'],
     ),
     KarnatakaPlace(
+      name: 'Vinoba Nagar (Vinobha Nagara), Shivamogga, Karnataka, India',
+      id: 'city_vinoba_nagar_shivamogga',
+      lat: 13.9416,
+      lng: 75.5657,
+      keywords: [
+        'vinobha nagara,shivamogga',
+        'vinoba nagar, shivamogga',
+        'vinoba nagar,shivamogga',
+        'vinobha nagar, shivamogga',
+        'vinoba nagar shivamogga',
+        'vinobha nagara shivamogga',
+        'vinoba nagar',
+        'vinobha nagar',
+        'vinoba nagara',
+        'vinobha nagara',
+        'vinobanagar',
+        'vinobhanagar',
+      ],
+    ),
+    KarnatakaPlace(
       name: 'Jog Falls, Shimoga, Karnataka, India',
       id: 'city_jog_falls',
       lat: 14.2285,
@@ -846,10 +866,29 @@ class KarnatakaPlacesRegistry {
   /// Resolves exact coordinates for any place in the Karnataka registry
   static CityResolution? resolvePlace(String placeIdOrName) {
     final clean = placeIdOrName.trim().toLowerCase();
+    if (clean.isEmpty) return null;
+
+    // Check if coordinates format e.g. "13.9416, 75.5657" or "Location (13.9416, 75.5657)"
+    final coordMatch = RegExp(r'(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)').firstMatch(clean);
+    if (coordMatch != null) {
+      final lat = double.tryParse(coordMatch.group(1)!);
+      final lng = double.tryParse(coordMatch.group(2)!);
+      if (lat != null && lng != null) {
+        return CityResolution(
+          name: 'Present Location',
+          placeId: 'coords_${lat}_$lng',
+          lat: lat,
+          lng: lng,
+          formattedAddress: placeIdOrName,
+        );
+      }
+    }
+
+    // Pass 1: Exact ID match, clean ID match, or exact full name match
     for (final dest in destinations) {
       if (dest.id.toLowerCase() == clean ||
-          dest.name.toLowerCase().startsWith(clean) ||
-          dest.id.replaceAll('city_', '').replaceAll('_', ' ') == clean) {
+          dest.id.replaceAll('city_', '').replaceAll('place_', '').replaceAll('_', ' ') == clean ||
+          dest.name.toLowerCase() == clean) {
         return CityResolution(
           name: dest.name.split(',').first.trim(),
           placeId: dest.id,
@@ -859,6 +898,94 @@ class KarnatakaPlacesRegistry {
         );
       }
     }
+
+    // Pass 2: Exact keyword match
+    for (final dest in destinations) {
+      for (final kw in dest.keywords) {
+        if (kw.toLowerCase().trim() == clean) {
+          return CityResolution(
+            name: dest.name.split(',').first.trim(),
+            placeId: dest.id,
+            lat: dest.lat,
+            lng: dest.lng,
+            formattedAddress: dest.name,
+          );
+        }
+      }
+    }
+
+    // Pass 3: dest.name starts with clean, or clean starts with dest primary name,
+    // or word tokens in primary name match clean
+    for (final dest in destinations) {
+      final primaryName = dest.name.split(',').first.trim().toLowerCase();
+      final cleanPrimary = primaryName.replaceAll('(', ' ').replaceAll(')', ' ');
+      final wordsInPrimary = cleanPrimary.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+
+      if (dest.name.toLowerCase().startsWith(clean) ||
+          clean.startsWith(primaryName) ||
+          wordsInPrimary.any((w) => w == clean)) {
+        return CityResolution(
+          name: dest.name.split(',').first.trim(),
+          placeId: dest.id,
+          lat: dest.lat,
+          lng: dest.lng,
+          formattedAddress: dest.name,
+        );
+      }
+    }
+
+    // Pass 4: Substring/token match - check keywords contained in clean, prioritizing longest match
+    // e.g. "Vinoba Nagar, Shivamogga" contains "vinoba nagar", matching Vinoba Nagar
+    // "Gopala, Shivamogga" contains "shivamogga", matching Shimoga
+    KarnatakaPlace? bestMatch;
+    int bestMatchLength = 0;
+
+    for (final dest in destinations) {
+      for (final kw in dest.keywords) {
+        final cleanKw = kw.toLowerCase().trim();
+        if (cleanKw.length >= 3 && clean.contains(cleanKw)) {
+          if (cleanKw.length > bestMatchLength) {
+            bestMatchLength = cleanKw.length;
+            bestMatch = dest;
+          }
+        }
+      }
+      final primary = dest.name.split(',').first.trim().toLowerCase();
+      if (primary.length >= 3 && clean.contains(primary)) {
+        if (primary.length > bestMatchLength) {
+          bestMatchLength = primary.length;
+          bestMatch = dest;
+        }
+      }
+    }
+
+    if (bestMatch != null) {
+      return CityResolution(
+        name: bestMatch.name.split(',').first.trim(),
+        placeId: bestMatch.id,
+        lat: bestMatch.lat,
+        lng: bestMatch.lng,
+        formattedAddress: bestMatch.name,
+      );
+    }
+
+    // Pass 5: Regional fallback via normalizeRegionKey
+    final regionKey = normalizeRegionKey(clean);
+    if (regionKey.isNotEmpty) {
+      for (final dest in destinations) {
+        if (dest.id.toLowerCase().contains(regionKey) ||
+            dest.keywords.any((k) => k.toLowerCase() == regionKey)) {
+          return CityResolution(
+            name: dest.name.split(',').first.trim(),
+            placeId: dest.id,
+            lat: dest.lat,
+            lng: dest.lng,
+            formattedAddress: dest.name,
+          );
+        }
+      }
+    }
+
     return null;
   }
 
@@ -883,7 +1010,7 @@ class KarnatakaPlacesRegistry {
     if (d.contains('chikmagalur') || d.contains('chikkamagaluru') || d.contains('mullayanagiri') || d.contains('kemmangundi') || d.contains('kudremukh') || d.contains('kalasa') || d.contains('horanadu') || d.contains('mudigere')) return 'chikmagalur';
     if (d.contains('hampi') || d.contains('hospet') || d.contains('hosapete') || d.contains('vijayanagara') || d.contains('bellary') || d.contains('ballari')) return 'hampi';
     if (d.contains('gokarna') || d.contains('kumta') || d.contains('karwar') || d.contains('ankola') || d.contains('honavar')) return 'gokarna';
-    if (d.contains('shimoga') || d.contains('shivamogga') || d.contains('jog falls') || d.contains('sagar') || d.contains('agumbe') || d.contains('thirthahalli') || d.contains('bhadravathi')) return 'shimoga';
+    if (d.contains('shimoga') || d.contains('shivamogga') || d.contains('vinoba') || d.contains('vinobha') || d.contains('jog falls') || d.contains('sagar') || d.contains('agumbe') || d.contains('thirthahalli') || d.contains('bhadravathi')) return 'shimoga';
     if (d.contains('bangalore') || d.contains('bengaluru') || d.contains('nandi hills') || d.contains('ramanagara')) return 'bangalore';
     if (d.contains('udupi') || d.contains('manipal') || d.contains('malpe') || d.contains('karkala') || d.contains('kundapura')) return 'udupi';
     if (d.contains('badami') || d.contains('pattadakal') || d.contains('aihole') || d.contains('bagalkot') || d.contains('ilkal') || d.contains('guledgudda')) return 'badami';

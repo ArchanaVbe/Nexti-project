@@ -1,11 +1,14 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'dart:math' as math;
 import '../models/trip_plan_models.dart';
 import '../services/karnataka_places.dart';
+import '../services/road_routing_service.dart';
 
 class TripDetailsScreen extends StatefulWidget {
   final Map<String, dynamic> trip;
@@ -36,8 +39,25 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
 
   late LatLng _destinationCenter;
   final Map<String, LatLng> _placeCoordinates = {};
+  List<String> _allPlaces = [];
   Set<Marker> _markers = {};
   Set<Polyline> _polylines = {};
+
+  // Direction & Turn-by-Turn Navigation State
+  DetailedRouteResult? _activeDirectionRoute;
+  NavigationStep? _currentNavStep;
+  NavigationStep? _nextNavStep;
+  int _currentStepIndex = 0;
+  double _distanceToNextManeuverMeters = 0.0;
+  bool _isNavigating = false;
+  bool _isSimulating = false;
+  Timer? _simulationTimer;
+  int _simulationPointIndex = 0;
+  LatLng? _userLiveLocation;
+  double _userLiveHeading = 0.0;
+  StreamSubscription<Position>? _positionStreamSub;
+  String? _turnPopupToastMessage;
+  Timer? _turnPopupToastTimer;
 
   ScrollController? _internalScrollController;
   ScrollController get _activeScrollController =>
@@ -47,6 +67,10 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
   static const Map<String, LatLng> _knownDestinations = {
     'shimoga': LatLng(13.9299, 75.5681),
     'shivamogga': LatLng(13.9299, 75.5681),
+    'vinoba nagar': LatLng(13.9416, 75.5657),
+    'vinobha nagar': LatLng(13.9416, 75.5657),
+    'vinoba nagara': LatLng(13.9416, 75.5657),
+    'vinobha nagara': LatLng(13.9416, 75.5657),
     'coorg': LatLng(12.4244, 75.7382),
     'kodagu': LatLng(12.4244, 75.7382),
     'madikeri': LatLng(12.4244, 75.7382),
@@ -114,10 +138,14 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
   void initState() {
     super.initState();
     _initializeCoordinatesAndMarkers();
+    _initLiveUserLocation();
   }
 
   @override
   void dispose() {
+    _positionStreamSub?.cancel();
+    _simulationTimer?.cancel();
+    _turnPopupToastTimer?.cancel();
     _mapController?.dispose();
     _internalScrollController?.dispose();
     super.dispose();
@@ -160,6 +188,7 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
         : null;
 
     _placeCoordinates.clear();
+    _allPlaces = rawPlaces;
 
     final markers = <Marker>{};
     final routePoints = <LatLng>[];
@@ -256,15 +285,11 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
             title: '${i + 1}. $place',
             snippet: 'Stop ${i + 1} on your itinerary',
             onTap: () {
-              setState(() {
-                _selectedPlace = place;
-              });
+              _focusOnPlace(place);
             },
           ),
           onTap: () {
-            setState(() {
-              _selectedPlace = place;
-            });
+            _focusOnPlace(place);
           },
         ),
       );
@@ -277,8 +302,8 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
         Polyline(
           polylineId: const PolylineId('trip_route'),
           points: routePoints,
-          color: const Color(0xFF6366F1),
-          width: 4,
+          color: const Color(0xFF6366F1).withValues(alpha: 0.6),
+          width: 3,
           jointType: JointType.round,
           startCap: Cap.roundCap,
           endCap: Cap.roundCap,
@@ -292,10 +317,333 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
     });
   }
 
+  Future<void> _initLiveUserLocation() async {
+    try {
+      final perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.always || perm == LocationPermission.whileInUse) {
+        final pos = await Geolocator.getLastKnownPosition() ??
+            await Geolocator.getCurrentPosition(
+              locationSettings: const LocationSettings(
+                accuracy: LocationAccuracy.medium,
+                timeLimit: Duration(seconds: 4),
+              ),
+            );
+        if (mounted) {
+          setState(() {
+            _userLiveLocation = LatLng(pos.latitude, pos.longitude);
+            _userLiveHeading = pos.heading;
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  void _triggerTurnPopupToast(String message) {
+    _turnPopupToastTimer?.cancel();
+    setState(() {
+      _turnPopupToastMessage = message;
+    });
+    _turnPopupToastTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) {
+        setState(() {
+          _turnPopupToastMessage = null;
+        });
+      }
+    });
+  }
+
+  static double _calculateBearing(LatLng start, LatLng end) {
+    final startLat = start.latitude * math.pi / 180;
+    final startLng = start.longitude * math.pi / 180;
+    final endLat = end.latitude * math.pi / 180;
+    final endLng = end.longitude * math.pi / 180;
+
+    final dLng = endLng - startLng;
+    final y = math.sin(dLng) * math.cos(endLat);
+    final x = math.cos(startLat) * math.sin(endLat) -
+        math.sin(startLat) * math.cos(endLat) * math.cos(dLng);
+    final bearing = math.atan2(y, x);
+    return (bearing * 180 / math.pi + 360) % 360;
+  }
+
+  static String _formatDistance(double meters) {
+    if (meters >= 1000) {
+      return '${(meters / 1000).toStringAsFixed(1)} km';
+    }
+    return '${meters.round()} m';
+  }
+
+  IconData _getManeuverIcon(String maneuver) {
+    final m = maneuver.toLowerCase();
+    if (m.contains('uturn') || m.contains('u-turn')) return Icons.u_turn_left_rounded;
+    if (m.contains('left')) return Icons.turn_left_rounded;
+    if (m.contains('right')) return Icons.turn_right_rounded;
+    if (m.contains('roundabout')) return Icons.roundabout_right_rounded;
+    if (m.contains('arrive')) return Icons.flag_rounded;
+    return Icons.straight_rounded;
+  }
+
+  Color _getManeuverColor(String maneuver) {
+    final m = maneuver.toLowerCase();
+    if (m.contains('uturn') || m.contains('u-turn')) return const Color(0xFFF59E0B);
+    if (m.contains('left')) return const Color(0xFF10B981);
+    if (m.contains('right')) return const Color(0xFF3B82F6);
+    if (m.contains('arrive')) return const Color(0xFF8B5CF6);
+    return const Color(0xFF6366F1);
+  }
+
+  Future<void> _startTripNavigation({bool simulate = false}) async {
+    if (_allPlaces.isEmpty) return;
+    final firstPlace = _allPlaces.first;
+    final destPos = _placeCoordinates[firstPlace] ?? _destinationCenter;
+
+    LatLng origin;
+    if (_userLiveLocation != null) {
+      origin = _userLiveLocation!;
+    } else {
+      final sLat = (widget.trip['startLat'] as num?)?.toDouble();
+      final sLng = (widget.trip['startLng'] as num?)?.toDouble();
+      if (sLat != null && sLng != null && sLat != 0.0 && sLng != 0.0) {
+        origin = LatLng(sLat, sLng);
+      } else {
+        origin = _destinationCenter;
+      }
+    }
+
+    try {
+      final route = await RoadRoutingService.getDetailedRoute(
+        origin,
+        destPos,
+        travelMode: widget.trip['travelMode']?.toString() ?? 'DRIVE',
+      );
+      if (!mounted) return;
+      setState(() {
+        _activeDirectionRoute = route;
+        _currentStepIndex = 0;
+        _currentNavStep = route.steps.isNotEmpty ? route.steps[0] : null;
+        _nextNavStep = route.steps.length > 1 ? route.steps[1] : null;
+      });
+      if (simulate) {
+        _startSimulatedNavigation();
+      } else {
+        await _startLiveNavigation();
+      }
+    } catch (_) {}
+  }
+
+  void _stopNavigation() {
+    _positionStreamSub?.cancel();
+    _positionStreamSub = null;
+    _simulationTimer?.cancel();
+    _simulationTimer = null;
+    if (mounted) {
+      setState(() {
+        _isNavigating = false;
+        _isSimulating = false;
+        _activeDirectionRoute = null;
+        _currentNavStep = null;
+        _nextNavStep = null;
+        _turnPopupToastMessage = null;
+      });
+      _updateMarkers();
+      _resetMapBounds();
+    }
+  }
+
+  Future<void> _startLiveNavigation() async {
+    if (_activeDirectionRoute == null) return;
+
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enable GPS / Location services to navigate.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Location permission required for turn-by-turn navigation.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Location permission denied permanently. Please enable in settings.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    _stopNavigation();
+
+    setState(() {
+      _isNavigating = true;
+      _isSimulating = false;
+      _currentStepIndex = 0;
+      _currentNavStep = _activeDirectionRoute!.steps.isNotEmpty
+          ? _activeDirectionRoute!.steps[0]
+          : null;
+      _nextNavStep = _activeDirectionRoute!.steps.length > 1
+          ? _activeDirectionRoute!.steps[1]
+          : null;
+    });
+
+    HapticFeedback.mediumImpact();
+    _triggerTurnPopupToast('Live Navigation Started • GPS Active');
+
+    const locationSettings = LocationSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 3,
+    );
+
+    _positionStreamSub = Geolocator.getPositionStream(locationSettings: locationSettings).listen((pos) {
+      _onUserPositionUpdated(LatLng(pos.latitude, pos.longitude), heading: pos.heading);
+    });
+
+    try {
+      final curPos = await Geolocator.getCurrentPosition();
+      _onUserPositionUpdated(LatLng(curPos.latitude, curPos.longitude), heading: curPos.heading);
+    } catch (_) {}
+  }
+
+  void _startSimulatedNavigation() {
+    if (_activeDirectionRoute == null || _activeDirectionRoute!.points.isEmpty) return;
+
+    _stopNavigation();
+
+    final allPoints = _activeDirectionRoute!.points;
+    final allSteps = _activeDirectionRoute!.steps;
+
+    setState(() {
+      _isNavigating = true;
+      _isSimulating = true;
+      _simulationPointIndex = 0;
+      _currentStepIndex = 0;
+      _currentNavStep = allSteps.isNotEmpty ? allSteps[0] : null;
+      _nextNavStep = allSteps.length > 1 ? allSteps[1] : null;
+      _userLiveLocation = allPoints.first;
+    });
+
+    HapticFeedback.mediumImpact();
+    _triggerTurnPopupToast('Demo Simulation Started • Watch turns');
+
+    _mapController?.animateCamera(
+      CameraUpdate.newCameraPosition(
+        CameraPosition(target: _userLiveLocation!, zoom: 16.5, tilt: 35.0),
+      ),
+    );
+
+    final stride = math.max(1, (allPoints.length / 25).floor());
+
+    _simulationTimer = Timer.periodic(const Duration(milliseconds: 1400), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+
+      int nextIdx = _simulationPointIndex + stride;
+      if (nextIdx >= allPoints.length) {
+        nextIdx = allPoints.length - 1;
+        timer.cancel();
+        setState(() {
+          _isSimulating = false;
+        });
+        HapticFeedback.vibrate();
+        _triggerTurnPopupToast('Arrived at ${_allPlaces.isNotEmpty ? _allPlaces.first : "Destination"}!');
+      }
+
+      _simulationPointIndex = nextIdx;
+      final currentPos = allPoints[nextIdx];
+
+      double bearing = 0.0;
+      if (nextIdx + 1 < allPoints.length) {
+        bearing = _calculateBearing(currentPos, allPoints[nextIdx + 1]);
+      }
+
+      _onUserPositionUpdated(currentPos, heading: bearing);
+    });
+  }
+
+  void _onUserPositionUpdated(LatLng userPos, {double? heading}) {
+    if (!mounted || _activeDirectionRoute == null) return;
+
+    setState(() {
+      _userLiveLocation = userPos;
+      _userLiveHeading = heading ?? _userLiveHeading;
+
+      final markers = Set<Marker>.from(_markers);
+      markers.removeWhere((m) => m.markerId.value == 'user_live_location');
+      markers.add(
+        Marker(
+          markerId: const MarkerId('user_live_location'),
+          position: userPos,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueCyan),
+          rotation: heading ?? 0.0,
+          flat: true,
+          anchor: const Offset(0.5, 0.5),
+          infoWindow: const InfoWindow(
+            title: 'Your Location',
+            snippet: 'Moving along route',
+          ),
+          zIndexInt: 10,
+        ),
+      );
+      _markers = markers;
+
+      if (_currentNavStep != null) {
+        final distToStepEnd = RoadRoutingService.calculateDistanceMeters(
+          userPos,
+          _currentNavStep!.endLocation,
+        );
+        _distanceToNextManeuverMeters = distToStepEnd;
+
+        if (distToStepEnd < 35 && _currentStepIndex + 1 < _activeDirectionRoute!.steps.length) {
+          _currentStepIndex++;
+          _currentNavStep = _activeDirectionRoute!.steps[_currentStepIndex];
+          _nextNavStep = (_currentStepIndex + 1 < _activeDirectionRoute!.steps.length)
+              ? _activeDirectionRoute!.steps[_currentStepIndex + 1]
+              : null;
+
+          HapticFeedback.heavyImpact();
+          _triggerTurnPopupToast(_currentNavStep!.shortActionTitle);
+        }
+      }
+    });
+
+    _mapController?.animateCamera(
+      CameraUpdate.newCameraPosition(
+        CameraPosition(
+          target: userPos,
+          zoom: 16.5,
+          tilt: 35.0,
+          bearing: heading ?? 0.0,
+        ),
+      ),
+    );
+  }
+
   void _focusOnPlace(String place) {
     setState(() {
       _selectedPlace = place;
     });
+    _updateMarkers();
 
     final coordinate = _placeCoordinates[place];
     if (coordinate != null && _mapController != null) {
@@ -314,6 +662,100 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
         );
       }
     }
+  }
+
+  void _clearSelectedPlace() {
+    setState(() {
+      _selectedPlace = null;
+    });
+    _updateMarkers();
+    _resetMapBounds();
+  }
+
+  void _updateMarkers() {
+    final markers = <Marker>{};
+
+    // Re-add hotel if exists
+    final hotelName = widget.trip['hotel']?.toString();
+    final hotelLat = (widget.trip['hotelLat'] as num?)?.toDouble();
+    final hotelLng = (widget.trip['hotelLng'] as num?)?.toDouble();
+    if (hotelLat != null && hotelLng != null && hotelLat != 0.0 && hotelLng != 0.0) {
+      markers.add(
+        Marker(
+          markerId: const MarkerId('trip_hotel'),
+          position: LatLng(hotelLat, hotelLng),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange),
+          infoWindow: InfoWindow(
+            title: hotelName != null && hotelName.isNotEmpty ? hotelName : 'Selected Hotel / Stay',
+            snippet: 'Stay / Accommodation Base',
+          ),
+        ),
+      );
+    }
+
+    // Re-add destination center
+    final destRaw = widget.trip['destination']?.toString() ?? 'Destination';
+    markers.add(
+      Marker(
+        markerId: const MarkerId('destination_center'),
+        position: _destinationCenter,
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
+        infoWindow: InfoWindow(
+          title: '$destRaw Center',
+          snippet: 'Trip Base Destination',
+        ),
+      ),
+    );
+
+    // Re-add user live location marker if active
+    if (_userLiveLocation != null && _isNavigating) {
+      markers.add(
+        Marker(
+          markerId: const MarkerId('user_live_location'),
+          position: _userLiveLocation!,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueCyan),
+          rotation: _userLiveHeading,
+          flat: true,
+          anchor: const Offset(0.5, 0.5),
+          infoWindow: const InfoWindow(
+            title: 'Your Location',
+            snippet: 'Moving along route',
+          ),
+          zIndexInt: 10,
+        ),
+      );
+    }
+
+    // Re-add place markers with selected color
+    for (int i = 0; i < _allPlaces.length; i++) {
+      final place = _allPlaces[i];
+      final coordinate = _placeCoordinates[place];
+      if (coordinate == null) continue;
+      final isSelected = _selectedPlace == place;
+      markers.add(
+        Marker(
+          markerId: MarkerId('place_$i'),
+          position: coordinate,
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            isSelected ? BitmapDescriptor.hueRed : BitmapDescriptor.hueAzure,
+          ),
+          infoWindow: InfoWindow(
+            title: '${i + 1}. $place',
+            snippet: 'Stop ${i + 1} on your itinerary',
+            onTap: () {
+              _focusOnPlace(place);
+            },
+          ),
+          onTap: () {
+            _focusOnPlace(place);
+          },
+        ),
+      );
+    }
+
+    setState(() {
+      _markers = markers;
+    });
   }
 
   void _resetMapBounds() {
@@ -459,14 +901,25 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
               final stopType = (stopMap['activity_type'] ?? stopMap['stop_type'] ?? stopMap['stopType'] ?? 'visit').toString().toUpperCase();
               final activity = (stopMap['notes'] ?? stopMap['activity'] ?? '').toString();
               final address = (stopMap['address'] ?? '').toString();
-              final durationMins = stopMap['duration_mins'] ?? stopMap['durationMins'] ?? 60;
-              final transitMins = stopMap['transit_mins'] ?? stopMap['transitMins'];
+              final durationMins = ((stopMap['duration_minutes'] ?? stopMap['duration_mins'] ?? stopMap['durationMins'] ?? 60) as num).toInt();
+              final transitMins = stopMap['travel_to_next_minutes'] ?? stopMap['transit_mins'] ?? stopMap['transitMins'];
 
               String period = stopType;
-              if (transitMins != null && transitMins > 0) {
-                period += ' • ${transitMins}m transit';
-              } else if (durationMins > 0) {
-                period += ' • ${durationMins}m';
+              if (stopType == 'START') {
+                period = (transitMins != null && (transitMins as num) > 0)
+                    ? 'START • ${_formatScheduleDuration(transitMins.toInt())} travel'
+                    : 'START • ${_formatScheduleDuration(durationMins)}';
+              } else if (stopType == 'END') {
+                period = 'END • NIGHT REST';
+              } else if (stopType == 'MEAL') {
+                period = 'MEAL • ${_formatScheduleDuration(durationMins)}';
+              } else if (stopType == 'BREAK') {
+                period = 'BREAK • ${_formatScheduleDuration(durationMins)}';
+              } else {
+                period = 'VISIT • ${_formatScheduleDuration(durationMins)}';
+                if (transitMins != null && (transitMins as num) >= 15) {
+                  period += ' (${_formatScheduleDuration(transitMins.toInt())} to next)';
+                }
               }
 
               activities.add({
@@ -515,14 +968,14 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
         String period;
 
         if (p == 0) {
-          timeSlot = '09:00 AM - 12:30 PM';
-          period = 'Morning Adventure';
+          timeSlot = (day == 1) ? '10:15 AM - 12:00 PM' : '09:00 AM - 12:30 PM';
+          period = 'Morning Visit';
         } else if (p == 1) {
-          timeSlot = '03:30 PM - 06:30 PM';
-          period = 'Afternoon Exploration';
+          timeSlot = '02:30 PM - 05:00 PM';
+          period = 'Afternoon Sights';
         } else {
-          timeSlot = '07:30 PM - 09:30 PM';
-          period = 'Evening Stroll';
+          timeSlot = '05:30 PM - 07:00 PM';
+          period = 'Sunset & Evening Tour';
         }
 
         dayActivities.add({
@@ -545,6 +998,13 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
     }
 
     return schedule;
+  }
+
+  static String _formatScheduleDuration(int minutes) {
+    if (minutes < 60) return '${minutes}m';
+    final h = minutes ~/ 60;
+    final m = minutes % 60;
+    return m == 0 ? '${h}h' : '${h}h ${m}m';
   }
 
   void _shareTripPlan() {
@@ -636,7 +1096,7 @@ Plan crafted with NexTripia-AI Travel Companion!
         elevation: isDark ? 0 : 1,
         leading: IconButton(
           icon: Icon(Icons.arrow_back_ios_new_rounded, color: isDark ? Colors.white : const Color(0xFF0F172A), size: 20),
-          onPressed: () => Navigator.pop(context),
+          onPressed: () => Navigator.pop(context, true),
         ),
         title: Text(
           '$destination Plan',
@@ -670,7 +1130,7 @@ Plan crafted with NexTripia-AI Travel Companion!
                       TextButton(
                         onPressed: () {
                           Navigator.pop(ctx);
-                          Navigator.pop(context);
+                          Navigator.pop(context, true);
                           widget.onDelete?.call();
                         },
                         child: const Text('Delete', style: TextStyle(color: Colors.red)),
@@ -691,7 +1151,9 @@ Plan crafted with NexTripia-AI Travel Companion!
   }
 
   Widget _buildMapSection() {
-    final double mapHeight = _isMapExpanded ? 420 : 260;
+    final double mapHeight = (_isMapExpanded || _isNavigating)
+        ? 460
+        : (_activeDirectionRoute != null ? 380 : 270);
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
@@ -713,146 +1175,363 @@ Plan crafted with NexTripia-AI Travel Companion!
       child: ClipRRect(
         borderRadius: widget.isEmbedded ? BorderRadius.circular(19) : BorderRadius.zero,
         child: Stack(
-        children: [
-          GoogleMap(
-            initialCameraPosition: CameraPosition(
-              target: _destinationCenter,
-              zoom: 11,
-            ),
-            mapType: _currentMapType,
-            markers: _markers,
-            polylines: _polylines,
-            myLocationButtonEnabled: false,
-            zoomControlsEnabled: false,
-            compassEnabled: true,
-            gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
-              Factory<OneSequenceGestureRecognizer>(
-                () => EagerGestureRecognizer(),
+          children: [
+            GoogleMap(
+              initialCameraPosition: CameraPosition(
+                target: _destinationCenter,
+                zoom: 11,
               ),
-            },
-            onMapCreated: (controller) {
-              _mapController = controller;
-              // Reset bounds after map is loaded
-              Future.delayed(const Duration(milliseconds: 500), _resetMapBounds);
-            },
-          ),
-
-          // Top floating controls
-          Positioned(
-            top: 12,
-            right: 12,
-            child: Column(
-              children: [
-                // Expand / Collapse map toggle
-                _buildMapFloatingButton(
-                  icon: _isMapExpanded ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
-                  tooltip: _isMapExpanded ? 'Collapse Map' : 'Expand Map',
-                  onTap: () {
-                    setState(() {
-                      _isMapExpanded = !_isMapExpanded;
-                    });
-                  },
+              mapType: _currentMapType,
+              markers: _markers,
+              polylines: _polylines,
+              myLocationButtonEnabled: false,
+              zoomControlsEnabled: false,
+              compassEnabled: true,
+              gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
+                Factory<OneSequenceGestureRecognizer>(
+                  () => EagerGestureRecognizer(),
                 ),
-                const SizedBox(height: 8),
-
-                // Map Style Switcher (Normal / Satellite)
-                _buildMapFloatingButton(
-                  icon: Icons.layers_rounded,
-                  tooltip: 'Map Style',
-                  onTap: () {
-                    setState(() {
-                      _currentMapType = _currentMapType == MapType.normal
-                          ? MapType.satellite
-                          : MapType.normal;
-                    });
-                  },
-                ),
-                const SizedBox(height: 8),
-
-                // Recenter All Stops
-                _buildMapFloatingButton(
-                  icon: Icons.fit_screen_rounded,
-                  tooltip: 'Fit All Stops',
-                  onTap: _resetMapBounds,
-                ),
-              ],
+              },
+              onMapCreated: (controller) {
+                _mapController = controller;
+                Future.delayed(const Duration(milliseconds: 500), _resetMapBounds);
+              },
             ),
-          ),
 
-          // Bottom Route Banner on Map
-          Positioned(
-            bottom: 12,
-            left: 12,
-            right: 12,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                color: (Theme.of(context).brightness == Brightness.dark
-                        ? const Color(0xFF1E293B)
-                        : Colors.white)
-                    .withValues(alpha: 0.94),
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.1),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
+            // 1. Navigation HUD when user is actively moving / navigating
+            if (_isNavigating)
+              Positioned(
+                top: 10,
+                left: 10,
+                right: 10,
+                child: _buildNavigationHUD(),
+              ),
+
+            // 2. Interactive Maneuver Toast Popup (turn left, turn right, take u-turn)
+            if (_turnPopupToastMessage != null)
+              Positioned(
+                top: _isNavigating ? 118 : 16,
+                left: 20,
+                right: 20,
+                child: _buildTurnPopupToast(),
+              ),
+
+            // 3. Top Right Floating Controls
+            // NOTE: The 3rd button (fit_screen_rounded) pointed to by the green arrow has been completely removed!
+            Positioned(
+              top: _isNavigating ? 120 : 12,
+              right: 12,
+              child: Column(
+                children: [
+                  // Expand / Collapse map toggle
+                  _buildMapFloatingButton(
+                    icon: _isMapExpanded ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
+                    tooltip: _isMapExpanded ? 'Collapse Map' : 'Expand Map',
+                    onTap: () {
+                      setState(() {
+                        _isMapExpanded = !_isMapExpanded;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 8),
+
+                  // Map Style Switcher (Normal / Satellite)
+                  _buildMapFloatingButton(
+                    icon: Icons.layers_rounded,
+                    tooltip: 'Map Style',
+                    onTap: () {
+                      setState(() {
+                        _currentMapType = _currentMapType == MapType.normal
+                            ? MapType.satellite
+                            : MapType.normal;
+                      });
+                    },
                   ),
                 ],
               ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: const BoxDecoration(
-                      color: Color(0xFF6366F1),
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      _selectedPlace != null
-                          ? 'Viewing: $_selectedPlace'
-                          : 'Interactive Route Map • ${_markers.length - 1} Spots',
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w700,
-                        color: Theme.of(context).brightness == Brightness.dark
-                            ? Colors.white
-                            : const Color(0xFF1E1B4B),
+            ),
+
+            // 4. Map Bottom Bar
+            if (!_isNavigating)
+              Positioned(
+                bottom: 12,
+                left: 12,
+                right: 12,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: (Theme.of(context).brightness == Brightness.dark
+                            ? const Color(0xFF1E293B)
+                            : Colors.white)
+                        .withValues(alpha: 0.94),
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.1),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
                       ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                    ],
                   ),
-                  if (_selectedPlace != null)
-                    GestureDetector(
-                      onTap: () {
-                        setState(() {
-                          _selectedPlace = null;
-                        });
-                        _resetMapBounds();
-                      },
-                      child: const Text(
-                        'Show All',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: const BoxDecoration(
                           color: Color(0xFF6366F1),
+                          shape: BoxShape.circle,
                         ),
                       ),
-                    ),
-                ],
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _selectedPlace != null
+                              ? 'Viewing: $_selectedPlace'
+                              : 'Interactive Route Map • ${_allPlaces.length} Spots',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w700,
+                            color: Theme.of(context).brightness == Brightness.dark
+                                ? Colors.white
+                                : const Color(0xFF1E1B4B),
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (_selectedPlace != null)
+                        GestureDetector(
+                          onTap: _clearSelectedPlace,
+                          child: const Text(
+                            'Show All',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF6366F1),
+                            ),
+                          ),
+                        )
+                      else if (_allPlaces.isNotEmpty)
+                        GestureDetector(
+                          onTap: () => _startTripNavigation(),
+                          onLongPress: () => _startTripNavigation(simulate: true),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: const [
+                              Icon(Icons.navigation_rounded, size: 14, color: Color(0xFF6366F1)),
+                              SizedBox(width: 4),
+                              Text(
+                                'Navigate',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF6366F1),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
               ),
-            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNavigationHUD() {
+    final step = _currentNavStep;
+    final maneuver = step?.maneuver ?? 'straight';
+    final actionTitle = step?.shortActionTitle ?? 'Continue Straight';
+    final icon = _getManeuverIcon(maneuver);
+    final color = _getManeuverColor(maneuver);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: (isDark ? const Color(0xFF0F172A) : Colors.white).withValues(alpha: 0.96),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: color.withValues(alpha: 0.6),
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: color.withValues(alpha: 0.25),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
           ),
         ],
       ),
-    ),
-  );
-}
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.16),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: color, width: 2),
+                ),
+                child: Center(
+                  child: Icon(icon, color: color, size: 26),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          actionTitle,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w900,
+                            color: color,
+                            letterSpacing: -0.2,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: color.withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            _distanceToNextManeuverMeters > 0
+                                ? 'In ${_formatDistance(_distanceToNextManeuverMeters)}'
+                                : (step?.distanceText ?? 'Ahead'),
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: color,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      step?.instruction ?? 'Proceed along indicated road route',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: isDark ? Colors.white : const Color(0xFF1E293B),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              GestureDetector(
+                onTap: _stopNavigation,
+                child: Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.close_rounded, size: 18, color: Colors.redAccent),
+                ),
+              ),
+            ],
+          ),
+          if (_nextNavStep != null) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: (isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9)),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  Icon(_getManeuverIcon(_nextNavStep!.maneuver), size: 14, color: _getManeuverColor(_nextNavStep!.maneuver)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Next: ${_nextNavStep!.shortActionTitle} (${_nextNavStep!.distanceText})',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                      ),
+                    ),
+                  ),
+                  if (_isSimulating)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF8B5CF6).withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Text(
+                        'DEMO',
+                        style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFF8B5CF6)),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTurnPopupToast() {
+    return AnimatedOpacity(
+      duration: const Duration(milliseconds: 250),
+      opacity: _turnPopupToastMessage != null ? 1.0 : 0.0,
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1B4B).withValues(alpha: 0.95),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: const Color(0xFF6366F1), width: 1.5),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.4),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.navigation_rounded, color: Color(0xFF818CF8), size: 16),
+              const SizedBox(width: 8),
+              Text(
+                _turnPopupToastMessage ?? '',
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+
 
   Widget _buildMapFloatingButton({
     required IconData icon,

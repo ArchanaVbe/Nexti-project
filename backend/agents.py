@@ -218,28 +218,80 @@ def build_daily_schedules_programmatic(
         )
         legs = route_info.get("legs", [])
 
-        # Build chronologically sequenced timeline
-        current_hour = 6 # Start at 6 AM
-        current_minute = 0
+        # Dynamic, human-friendly departure based on transit time to first spot
+        transit_to_first = legs[0]["duration_minutes"] if legs else 25
+        first_leg_km = legs[0]["distance_km"] if legs else 12.0
+
+        if day_i == 0:
+            if transit_to_first >= 180:
+                current_hour = 6
+                current_minute = 0
+            elif transit_to_first >= 90:
+                current_hour = 7
+                current_minute = 0
+            elif transit_to_first >= 45:
+                current_hour = 8
+                current_minute = 0
+            else:
+                current_hour = 8
+                current_minute = 30
+        else:
+            current_hour = 8
+            current_minute = 30
+
         scheduled_stops = []
 
         # 1. Start point
+        ampm = "AM" if current_hour < 12 else "PM"
+        display_h = current_hour if 1 <= current_hour <= 12 else (current_hour - 12 if current_hour > 12 else 12)
+        h_dur = transit_to_first // 60
+        m_dur = transit_to_first % 60
+        dur_label = f"{h_dur}h {m_dur}m" if h_dur > 0 else f"{m_dur}m"
+
+        start_notes = (
+            f"Depart by {travel_mode} • {dur_label} travel ({first_leg_km} km)"
+            if day_i == 0
+            else "Depart from hotel after breakfast"
+        )
+
         scheduled_stops.append(
             {
-                "time": f"{current_hour:02d}:{current_minute:02d} AM",
+                "time": f"{display_h:02d}:{current_minute:02d} {ampm}",
                 "place_id": "start_point",
                 "name": f"Start: {current_start_point or 'Starting Point'}",
                 "activity_type": "start",
                 "duration_minutes": 15,
-                "travel_to_next_minutes": legs[0]["duration_minutes"] if legs else 15,
-                "notes": f"Depart from starting location ({travel_mode})",
+                "travel_to_next_minutes": transit_to_first,
+                "notes": start_notes,
             }
         )
-        # Advance time by transit
-        transit_to_first = legs[0]["duration_minutes"] if legs else 15
-        total_min = current_minute + 15 + transit_to_first
-        current_hour += total_min // 60
-        current_minute = total_min % 60
+
+        # 2. Highway break if long travel (> 2.5 hours)
+        has_highway_break = False
+        if day_i == 0 and transit_to_first >= 150:
+            has_highway_break = True
+            half_transit = transit_to_first // 2
+            tot_bk = current_minute + 15 + half_transit
+            bk_h = current_hour + tot_bk // 60
+            bk_m = tot_bk % 60
+            bk_ampm = "AM" if bk_h < 12 else "PM"
+            bk_dh = bk_h if 1 <= bk_h <= 12 else (bk_h - 12 if bk_h > 12 else 12)
+            scheduled_stops.append(
+                {
+                    "time": f"{bk_dh:02d}:{bk_m:02d} {bk_ampm}",
+                    "place_id": "highway_break",
+                    "name": "Highway Refreshment & Tea Break",
+                    "activity_type": "break",
+                    "duration_minutes": 25,
+                    "travel_to_next_minutes": transit_to_first - half_transit,
+                    "notes": "Restroom, tea/coffee & light breakfast on highway route",
+                }
+            )
+
+        # Advance time to arrival at first destination
+        tot_initial = current_minute + 15 + transit_to_first + (25 if has_highway_break else 0)
+        current_hour += tot_initial // 60
+        current_minute = tot_initial % 60
 
         lunch_inserted = False
 
@@ -248,32 +300,39 @@ def build_daily_schedules_programmatic(
             if not details.get("has_opening_hours"):
                 warnings.append(f"Opening hours for '{p['name']}' are unverified.")
 
-            # Check for lunch around 13:00 (1 PM)
-            if current_hour >= 13 and not lunch_inserted:
-                lunch_time_str = f"01:{current_minute:02d} PM"
+            # Check for lunch between 12:45 PM and 2:00 PM
+            time_in_mins = current_hour * 60 + current_minute
+            if not lunch_inserted and 765 <= time_in_mins <= 870:
+                l_ampm = "AM" if current_hour < 12 else "PM"
+                l_dh = current_hour if 1 <= current_hour <= 12 else (current_hour - 12 if current_hour > 12 else 12)
                 scheduled_stops.append(
                     {
-                        "time": lunch_time_str,
+                        "time": f"{l_dh:02d}:{current_minute:02d} {l_ampm}",
                         "place_id": "lunch_stop",
-                        "name": "Lunch & Refreshment Break",
+                        "name": "Lunch & Regional Cuisine Refreshment",
                         "activity_type": "meal",
                         "duration_minutes": 60,
                         "travel_to_next_minutes": 10,
-                        "notes": "Enjoy regional authentic food and rest",
+                        "notes": "Enjoy regional authentic dining and rest",
                     }
                 )
-                current_hour += 1
-                current_minute = (current_minute + 10) % 60
+                tot_lunch = current_minute + 60 + 10
+                current_hour += tot_lunch // 60
+                current_minute = tot_lunch % 60
                 lunch_inserted = True
 
             visit_duration = 90
+            p_name_lower = p["name"].lower()
+            if any(k in p_name_lower for k in ("sunset", "viewpoint", "lookout")):
+                visit_duration = 60
+            elif any(k in p_name_lower for k in ("temple", "gopura", "tower")):
+                visit_duration = 75
+
             ampm = "AM" if current_hour < 12 else "PM"
-            display_h = current_hour if current_hour <= 12 else current_hour - 12
-            if display_h == 0:
-                display_h = 12
+            display_h = current_hour if 1 <= current_hour <= 12 else (current_hour - 12 if current_hour > 12 else 12)
 
             leg_duration = (
-                legs[p_idx + 1]["duration_minutes"] if (p_idx + 1) < len(legs) else 20
+                legs[p_idx + 1]["duration_minutes"] if (p_idx + 1) < len(legs) else 15
             )
 
             scheduled_stops.append(
@@ -293,16 +352,51 @@ def build_daily_schedules_programmatic(
             current_hour += tot_min // 60
             current_minute = tot_min % 60
 
-        # Final return
-        # Adjust so that the day ends at exactly 12:00 AM (next day) for 6 hrs sleep
-        if num_days > 1:
-            final_time_str = "12:00 AM" # Midnight
+            if not lunch_inserted and current_hour >= 14:
+                l_ampm = "PM"
+                l_dh = current_hour - 12 if current_hour > 12 else 12
+                scheduled_stops.append(
+                    {
+                        "time": f"{l_dh:02d}:{current_minute:02d} {l_ampm}",
+                        "place_id": "lunch_stop",
+                        "name": "Late Lunch & Refreshment Break",
+                        "activity_type": "meal",
+                        "duration_minutes": 45,
+                        "travel_to_next_minutes": 10,
+                        "notes": "Regional dining and afternoon rest",
+                    }
+                )
+                tot_lunch = current_minute + 45 + 10
+                current_hour += tot_lunch // 60
+                current_minute = tot_lunch % 60
+                lunch_inserted = True
+
+        # Dinner Break (19:30 - 20:30)
+        if 19 <= current_hour < 21:
+            d_ampm = "PM"
+            d_dh = current_hour - 12 if current_hour > 12 else 12
+            scheduled_stops.append(
+                {
+                    "time": f"{d_dh:02d}:{current_minute:02d} {d_ampm}",
+                    "place_id": "dinner_stop",
+                    "name": "Dinner & Evening Relaxation",
+                    "activity_type": "meal",
+                    "duration_minutes": 50,
+                    "travel_to_next_minutes": 15,
+                    "notes": "Traditional dinner & relaxing evening downtime",
+                }
+            )
+            tot_dinner = current_minute + 50 + 15
+            current_hour += tot_dinner // 60
+            current_minute = tot_dinner % 60
+
+        # Human-friendly night hotel arrival (09:15 PM - 09:30 PM)
+        if current_hour < 21 or (current_hour == 21 and current_minute < 15):
+            final_time_str = "09:15 PM"
         else:
-            final_ampm = "AM" if current_hour < 12 else "PM"
-            final_display_h = current_hour if current_hour <= 12 else current_hour - 12
-            if final_display_h == 0:
-                final_display_h = 12
-            final_time_str = f"{final_display_h:02d}:{current_minute:02d} {final_ampm}"
+            final_h = min(22, current_hour)
+            final_dh = final_h - 12 if final_h > 12 else final_h
+            final_time_str = f"{final_dh:02d}:{current_minute:02d} PM"
 
         scheduled_stops.append(
             {
@@ -312,7 +406,11 @@ def build_daily_schedules_programmatic(
                 "activity_type": "end",
                 "duration_minutes": 0,
                 "travel_to_next_minutes": 0,
-                "notes": "Arrival at hotel (6 hrs sleep schedule applied)" if num_days > 1 else "Arrival at resting location",
+                "notes": (
+                    "Hotel check-in & rest (sleep schedule: 10:00 PM – 07:30 AM • 9 hrs rest)"
+                    if num_days > 1
+                    else "Arrival at resting location"
+                ),
             }
         )
 

@@ -51,6 +51,25 @@ void main() {
     expect(resShimoga!.lat, closeTo(13.9299, 0.001));
     expect(resShimoga.lng, closeTo(75.5681, 0.001));
 
+    final resShivamoggaText = KarnatakaPlacesRegistry.resolvePlace('shivamogga');
+    expect(resShivamoggaText, isNotNull);
+    expect(resShivamoggaText!.lat, closeTo(13.9299, 0.01));
+    expect(resShivamoggaText.lng, closeTo(75.5681, 0.01));
+
+    final resVinobaNagarExact = KarnatakaPlacesRegistry.resolvePlace('vinobha nagara,shivamogga');
+    expect(resVinobaNagarExact, isNotNull);
+    expect(resVinobaNagarExact!.lat, closeTo(13.9416, 0.001));
+    expect(resVinobaNagarExact.lng, closeTo(75.5657, 0.001));
+
+    final resVinobaNagarSpaced = KarnatakaPlacesRegistry.resolvePlace('vinoba nagar, shivamogga');
+    expect(resVinobaNagarSpaced, isNotNull);
+    expect(resVinobaNagarSpaced!.lat, closeTo(13.9416, 0.001));
+    expect(resVinobaNagarSpaced.lng, closeTo(75.5657, 0.001));
+
+    final resVinobhaSingle = KarnatakaPlacesRegistry.resolvePlace('vinobha nagara');
+    expect(resVinobhaSingle, isNotNull);
+    expect(resVinobhaSingle!.lat, closeTo(13.9416, 0.001));
+
     final resCoorg = KarnatakaPlacesRegistry.resolvePlace('city_coorg');
     expect(resCoorg, isNotNull);
     expect(resCoorg!.lat, closeTo(12.4244, 0.001));

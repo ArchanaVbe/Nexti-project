@@ -9,6 +9,7 @@ Implements:
 
 import math
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -191,35 +192,43 @@ def compute_route(
     """
     key = os.getenv("GOOGLE_MAPS_API_KEY", GOOGLE_MAPS_API_KEY)
     mode_param = travel_mode.lower()
-    if mode_param == "drive":
+    if mode_param in ("drive", "car"):
         mode_param = "driving"
-    elif mode_param == "walk":
+    elif mode_param in ("walk", "walking"):
         mode_param = "walking"
-    elif mode_param == "bike":
+    elif mode_param in ("bike", "bicycle", "bicycling"):
         mode_param = "bicycling"
-    elif mode_param == "transit":
+    elif mode_param in ("transit", "bus", "train"):
         mode_param = "transit"
     else:
         mode_param = "driving"
 
-    if key and not origin.startswith("loc_") and not destination.startswith("loc_"):
-        wp_param = ""
-        if waypoints:
-            wp_str = "|".join(waypoints)
-            wp_param = f"&waypoints=optimize:true|{wp_str}"
+    # Clean origin and destination strings
+    clean_origin = re.sub(r"^(Start|Depart):\s*", "", origin, flags=re.IGNORECASE).strip()
+    clean_dest = re.sub(r"^(End|Destination):\s*", "", destination, flags=re.IGNORECASE).strip()
 
-        url = (
-            "https://maps.googleapis.com/maps/api/directions/json"
-            f"?origin={origin}"
-            f"&destination={destination}"
-            f"{wp_param}"
-            f"&mode={mode_param}"
-            f"&key={key}"
-        )
+    # If destination is generic (e.g. "Hotel" or "Starting Point Hotel"), replace with last waypoint
+    if clean_dest.lower() in ("hotel", "starting point hotel", "hotel stay", "") and waypoints:
+        clean_dest = waypoints[-1]
+
+    if key and not clean_origin.startswith("loc_") and not clean_dest.startswith("loc_"):
+        params = {
+            "origin": clean_origin,
+            "destination": clean_dest,
+            "mode": mode_param,
+            "key": key,
+        }
+        if waypoints:
+            params["waypoints"] = "optimize:true|" + "|".join(waypoints)
+
         try:
-            resp = requests.get(url, timeout=2.5)
+            resp = requests.get(
+                "https://maps.googleapis.com/maps/api/directions/json",
+                params=params,
+                timeout=10.0,
+            )
             data = resp.json()
-            if data.get("status") == "OK":
+            if data.get("status") == "OK" and data.get("routes"):
                 route = data["routes"][0]
                 legs_data = []
                 total_duration_sec = 0
@@ -252,7 +261,7 @@ def compute_route(
             pass
 
     # Fallback route calculation
-    return _compute_fallback_route(origin, destination, waypoints, travel_mode)
+    return _compute_fallback_route(clean_origin, clean_dest, waypoints, travel_mode)
 
 
 # ----------------------------------------------------------------------
@@ -587,18 +596,51 @@ def _get_fallback_place_details(place_id: str) -> Dict[str, Any]:
     }
 
 
+_KNOWN_KARNATAKA_COORDS = {
+    "shivamogga": (13.9299, 75.5681),
+    "shimoga": (13.9299, 75.5681),
+    "vinoba nagar": (13.9416, 75.5657),
+    "vinobha nagara": (13.9416, 75.5657),
+    "vinobanagar": (13.9416, 75.5657),
+    "murudeshwar": (14.0940, 74.4899),
+    "raja gopura": (14.0930, 74.4890),
+    "gokarna": (14.5479, 74.3188),
+    "bangalore": (12.9716, 77.5946),
+    "bengaluru": (12.9716, 77.5946),
+    "mysuru": (12.2958, 76.6394),
+    "mysore": (12.2958, 76.6394),
+    "hampi": (15.3350, 76.4600),
+    "coorg": (12.4244, 75.7382),
+    "madikeri": (12.4244, 75.7382),
+    "chikmagalur": (13.3161, 75.7720),
+    "udupi": (13.3409, 74.7421),
+    "mangalore": (12.9141, 74.8560),
+    "mangaluru": (12.9141, 74.8560),
+    "dandeli": (15.2447, 74.6225),
+    "badami": (15.9187, 75.6766),
+    "jog falls": (14.2285, 74.8123),
+    "agumbe": (13.5025, 75.0935),
+    "belur": (13.1623, 75.8648),
+    "halebidu": (13.2167, 75.9917),
+}
+
+
+def _lookup_place_coord(name: str) -> Optional[Tuple[float, float]]:
+    clean = name.lower().strip()
+    for k, coord in _KNOWN_KARNATAKA_COORDS.items():
+        if k in clean:
+            return coord
+    return None
+
+
 def _compute_fallback_route(
     origin: str, destination: str, waypoints: List[str], travel_mode: str
 ) -> Dict[str, Any]:
-    """Generates synthetic travel metrics and leg details for routing."""
-    speed_kmh = 45.0
+    """Generates realistic travel metrics and leg details for routing using coordinates and road factors."""
     mode_lower = travel_mode.lower()
-    if "walk" in mode_lower:
-        speed_kmh = 4.5
-    elif "bike" in mode_lower:
-        speed_kmh = 15.0
-    elif "transit" in mode_lower:
-        speed_kmh = 30.0
+    is_walk = "walk" in mode_lower
+    is_bike = "bike" in mode_lower
+    is_transit = "transit" in mode_lower
 
     all_stops = [origin] + waypoints + [destination]
     legs = []
@@ -606,8 +648,39 @@ def _compute_fallback_route(
     total_min = 0
 
     for i in range(len(all_stops) - 1):
-        leg_km = round(12.0 + ((i % 4) * 5.5), 1)
-        dur_min = max(8, math.ceil((leg_km / speed_kmh) * 60))
+        s1 = all_stops[i]
+        s2 = all_stops[i + 1]
+
+        c1 = _lookup_place_coord(s1)
+        c2 = _lookup_place_coord(s2)
+
+        if c1 and c2:
+            straight_km = haversine_distance_km(c1[0], c1[1], c2[0], c2[1])
+            in_ghats = (13.0 <= c1[0] <= 15.6 and 74.0 <= c1[1] <= 76.2) or \
+                       (13.0 <= c2[0] <= 15.6 and 74.0 <= c2[1] <= 76.2)
+            factor = 1.52 if in_ghats else 1.32
+            leg_km = round(straight_km * factor, 1)
+        else:
+            leg_km = round(15.0 + ((i % 4) * 6.0), 1)
+
+        if is_walk:
+            speed = 4.5
+            buffer_min = 0
+        elif is_bike:
+            speed = 15.0
+            buffer_min = 0
+        elif is_transit:
+            speed = 38.0
+            buffer_min = 20
+        else:
+            # Drive speed
+            if leg_km > 35:
+                speed = 46.0  # ghat/highway road speed
+            else:
+                speed = 30.0  # in-city
+            buffer_min = 0
+
+        dur_min = max(5, math.ceil((leg_km / speed) * 60) + buffer_min)
         total_km += leg_km
         total_min += dur_min
 
@@ -615,8 +688,8 @@ def _compute_fallback_route(
             {
                 "duration_minutes": dur_min,
                 "distance_km": leg_km,
-                "start_address": all_stops[i],
-                "end_address": all_stops[i + 1],
+                "start_address": s1,
+                "end_address": s2,
             }
         )
 

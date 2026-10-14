@@ -13,12 +13,14 @@ class GoogleMapsSelection extends StatefulWidget {
   final String? initialDestination;
   final String? initialStartPoint;
   final LatLng? initialDestinationLocation;
+  final LatLng? initialStartLocation;
 
   const GoogleMapsSelection({
     super.key,
     this.initialDestination,
     this.initialStartPoint,
     this.initialDestinationLocation,
+    this.initialStartLocation,
   });
 
   @override
@@ -43,8 +45,10 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
   bool isLoading = true;
   bool isFetchingLocation = false;
   bool isSearchingDestination = false;
+  bool isSearchingStartPoint = false;
   bool isCalculatingRoute = false;
   List<KarnatakaPlace> destinationSuggestions = [];
+  List<KarnatakaPlace> startPointSuggestions = [];
 
   // Live Navigation & movement tracking state
   bool isNavigating = false;
@@ -67,10 +71,19 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
   @override
   void initState() {
     super.initState();
+    if (widget.initialStartLocation != null) {
+      currentLocation = widget.initialStartLocation;
+    }
     if (widget.initialStartPoint != null && widget.initialStartPoint!.isNotEmpty) {
       final init = widget.initialStartPoint!.trim();
       if (!init.startsWith('Location (') && !RegExp(r'^\s*\(?\s*\d+\.\d+').hasMatch(init)) {
         currentLocationController.text = init;
+      }
+      if (currentLocation == null) {
+        final resolved = KarnatakaPlacesRegistry.resolvePlace(init);
+        if (resolved != null) {
+          currentLocation = LatLng(resolved.lat, resolved.lng);
+        }
       }
     }
     if (widget.initialDestination != null && widget.initialDestination!.isNotEmpty) {
@@ -78,9 +91,23 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
     }
     if (widget.initialDestinationLocation != null) {
       selectedDestination = widget.initialDestinationLocation;
+    } else if (widget.initialDestination != null && widget.initialDestination!.isNotEmpty) {
+      final resDest = KarnatakaPlacesRegistry.resolvePlace(widget.initialDestination!);
+      if (resDest != null) {
+        selectedDestination = LatLng(resDest.lat, resDest.lng);
+      }
     }
 
-    _fetchCurrentLocation();
+    if (currentLocation != null) {
+      isLoading = false;
+      isFetchingLocation = false;
+      _addCurrentLocationMarker();
+      if (selectedDestination != null) {
+        _drawRoute();
+      }
+    } else {
+      _fetchCurrentLocation();
+    }
   }
 
   String? _findNearestKarnatakaCity(double lat, double lng) {
@@ -174,13 +201,24 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
   }
 
   void _setDefaultLocation() {
-    // Default to Bengaluru center
-    final fallback = const LatLng(12.9716, 77.5946);
-    setState(() {
-      currentLocation ??= fallback;
-      if (currentLocationController.text.isEmpty) {
-        currentLocationController.text = 'Bengaluru, Karnataka';
+    if (currentLocation == null) {
+      if (widget.initialStartLocation != null) {
+        currentLocation = widget.initialStartLocation;
+      } else if (currentLocationController.text.isNotEmpty) {
+        final resolved = KarnatakaPlacesRegistry.resolvePlace(currentLocationController.text);
+        if (resolved != null) {
+          currentLocation = LatLng(resolved.lat, resolved.lng);
+        }
       }
+    }
+
+    // Default to central Karnataka hub (Shivamogga) instead of Bengaluru
+    currentLocation ??= const LatLng(13.9299, 75.5681);
+    if (currentLocationController.text.isEmpty) {
+      currentLocationController.text = 'Shivamogga, Karnataka';
+    }
+
+    setState(() {
       isLoading = false;
       isFetchingLocation = false;
     });
@@ -190,6 +228,72 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
     if (widget.initialDestination != null && widget.initialDestination!.isNotEmpty) {
       _resolveDestinationAndRoute(widget.initialDestination!);
     }
+  }
+
+  Future<void> _resolveStartLocationAndRoute(String query) async {
+    final clean = query.trim();
+    if (clean.isEmpty) return;
+
+    setState(() => isFetchingLocation = true);
+
+    LatLng? resolvedPos;
+    String resolvedName = clean;
+
+    final resolved = KarnatakaPlacesRegistry.resolvePlace(clean);
+    if (resolved != null) {
+      resolvedPos = LatLng(resolved.lat, resolved.lng);
+      resolvedName = resolved.name.split(',').first.trim();
+    } else {
+      final tripApiResolved = await TripApi.resolveAddressOrPlace(clean);
+      if (tripApiResolved != null) {
+        resolvedPos = LatLng(tripApiResolved.lat, tripApiResolved.lng);
+        resolvedName = tripApiResolved.name.split(',').first.trim();
+      }
+    }
+
+    setState(() => isFetchingLocation = false);
+
+    if (resolvedPos != null) {
+      setState(() {
+        currentLocation = resolvedPos;
+        currentLocationController.text = resolvedName;
+        startPointSuggestions = [];
+      });
+      _addCurrentLocationMarker();
+      if (selectedDestination != null) {
+        _drawRoute();
+      } else {
+        _updateMapCamera(resolvedPos);
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not locate "$clean" in Karnataka.'),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _onStartPointQueryChanged(String query) async {
+    final clean = query.trim().toLowerCase();
+    if (clean.isEmpty || KarnatakaPlacesRegistry.isExplicitlyOutsideKarnataka(clean)) {
+      setState(() => startPointSuggestions = []);
+      return;
+    }
+
+    final matches = KarnatakaPlacesRegistry.destinations.where((p) {
+      final nameLower = p.name.toLowerCase();
+      return nameLower.contains(clean) ||
+          p.keywords.any((kw) => kw.toLowerCase().contains(clean));
+    }).take(6).toList();
+
+    setState(() {
+      startPointSuggestions = matches;
+    });
   }
 
   void _addCurrentLocationMarker() {
@@ -782,7 +886,7 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                   }
                 },
                 initialCameraPosition: CameraPosition(
-                  target: currentLocation ?? const LatLng(12.9716, 77.5946),
+                  target: currentLocation ?? const LatLng(13.9299, 75.5681),
                   zoom: 12,
                 ),
                 markers: markers,
@@ -946,6 +1050,8 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                             Expanded(
                               child: TextField(
                                 controller: currentLocationController,
+                                onChanged: _onStartPointQueryChanged,
+                                onSubmitted: _resolveStartLocationAndRoute,
                                 style: TextStyle(
                                   fontSize: 14,
                                   fontWeight: FontWeight.w600,
@@ -990,18 +1096,89 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                                             child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4285F4)),
                                           ),
                                         )
-                                      : IconButton(
-                                          icon: const Icon(Icons.my_location_rounded, color: Color(0xFF4285F4), size: 19),
-                                          tooltip: 'Fetch Current GPS Location',
-                                          padding: EdgeInsets.zero,
-                                          constraints: const BoxConstraints(),
-                                          onPressed: _fetchCurrentLocation,
+                                      : Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            if (currentLocationController.text.isNotEmpty)
+                                              IconButton(
+                                                icon: const Icon(Icons.search_rounded, color: Color(0xFF4285F4), size: 19),
+                                                tooltip: 'Find starting location',
+                                                padding: EdgeInsets.zero,
+                                                constraints: const BoxConstraints(),
+                                                onPressed: () => _resolveStartLocationAndRoute(currentLocationController.text),
+                                              ),
+                                            IconButton(
+                                              icon: const Icon(Icons.my_location_rounded, color: Color(0xFF4285F4), size: 19),
+                                              tooltip: 'Fetch Current GPS Location',
+                                              padding: EdgeInsets.zero,
+                                              constraints: const BoxConstraints(),
+                                              onPressed: _fetchCurrentLocation,
+                                            ),
+                                            const SizedBox(width: 4),
+                                          ],
                                         ),
                                 ),
                               ),
                             ),
                           ],
                         ),
+
+                        // Starting Point Suggestions Dropdown
+                        if (startPointSuggestions.isNotEmpty)
+                          Container(
+                            margin: const EdgeInsets.only(top: 6, bottom: 6),
+                            decoration: BoxDecoration(
+                              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.15),
+                                  blurRadius: 10,
+                                ),
+                              ],
+                            ),
+                            child: ListView.separated(
+                              shrinkWrap: true,
+                              padding: EdgeInsets.zero,
+                              itemCount: startPointSuggestions.length,
+                              separatorBuilder: (context, index) => Divider(
+                                height: 1,
+                                thickness: 0.5,
+                                color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                              ),
+                              itemBuilder: (context, index) {
+                                final place = startPointSuggestions[index];
+                                return ListTile(
+                                  dense: true,
+                                  leading: const Icon(Icons.location_city_rounded, color: Color(0xFF4285F4), size: 18),
+                                  title: Text(
+                                    place.name,
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
+                                    ),
+                                  ),
+                                  onTap: () {
+                                    setState(() {
+                                      currentLocationController.text = place.name.split(',').first.trim();
+                                      currentLocation = LatLng(place.lat, place.lng);
+                                      startPointSuggestions = [];
+                                    });
+                                    _addCurrentLocationMarker();
+                                    if (selectedDestination != null) {
+                                      _drawRoute();
+                                    } else {
+                                      _updateMapCamera(currentLocation!);
+                                    }
+                                  },
+                                );
+                              },
+                            ),
+                          ),
 
                         // Divider with dots
                         Padding(
