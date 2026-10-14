@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../services/karnataka_places.dart';
 import '../services/road_routing_service.dart';
 import '../services/trip_api.dart';
@@ -43,6 +45,12 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
   bool isSearchingDestination = false;
   bool isCalculatingRoute = false;
   List<KarnatakaPlace> destinationSuggestions = [];
+
+  // Live Navigation & movement tracking state
+  bool isNavigating = false;
+  StreamSubscription<Position>? _positionStreamSub;
+  double _currentHeading = 0.0;
+  double _currentSpeedKmh = 0.0;
 
   // Popular quick-pick destinations
   final List<String> popularDestinations = [
@@ -250,6 +258,19 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
     final clean = query.trim();
     if (clean.isEmpty) return;
 
+    if (KarnatakaPlacesRegistry.isExplicitlyOutsideKarnataka(clean)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('"$clean" is outside Karnataka. NextTripia is dedicated to trips within Karnataka.'),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
     setState(() => isSearchingDestination = true);
 
     LatLng? resolvedPos;
@@ -279,13 +300,19 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
       try {
         final locations = await _geocoding.locationFromAddress('$clean, Karnataka, India');
         if (locations.isNotEmpty) {
-          resolvedPos = LatLng(locations[0].latitude, locations[0].longitude);
+          final loc = locations[0];
+          if (KarnatakaPlacesRegistry.isPlaceInKarnataka(clean, lat: loc.latitude, lng: loc.longitude)) {
+            resolvedPos = LatLng(loc.latitude, loc.longitude);
+          }
         }
       } catch (_) {
         try {
           final locations = await _geocoding.locationFromAddress(clean);
           if (locations.isNotEmpty) {
-            resolvedPos = LatLng(locations[0].latitude, locations[0].longitude);
+            final loc = locations[0];
+            if (KarnatakaPlacesRegistry.isPlaceInKarnataka(clean, lat: loc.latitude, lng: loc.longitude)) {
+              resolvedPos = LatLng(loc.latitude, loc.longitude);
+            }
           }
         } catch (_) {}
       }
@@ -294,6 +321,18 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
     setState(() => isSearchingDestination = false);
 
     if (resolvedPos != null) {
+      if (!KarnatakaPlacesRegistry.isPlaceInKarnataka(resolvedName, lat: resolvedPos.latitude, lng: resolvedPos.longitude)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('"$clean" is outside Karnataka. NextTripia supports Karnataka destinations only.'),
+              backgroundColor: Colors.redAccent,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+        return;
+      }
       setState(() {
         selectedDestination = resolvedPos;
         destinationController.text = resolvedName;
@@ -304,8 +343,11 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Could not locate "$clean". Tap on map to pin destination.'),
+            content: Text(KarnatakaPlacesRegistry.isExplicitlyOutsideKarnataka(clean)
+                ? '"$clean" is outside Karnataka.'
+                : 'Could not locate "$clean" in Karnataka. Tap on map to pin destination.'),
             backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
           ),
         );
       }
@@ -314,7 +356,7 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
 
   Future<void> _onDestinationQueryChanged(String query) async {
     final clean = query.trim().toLowerCase();
-    if (clean.isEmpty) {
+    if (clean.isEmpty || KarnatakaPlacesRegistry.isExplicitlyOutsideKarnataka(clean)) {
       setState(() => destinationSuggestions = []);
       return;
     }
@@ -331,6 +373,19 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
   }
 
   Future<void> _handleMapTap(LatLng position) async {
+    if (!KarnatakaPlacesRegistry.isPlaceInKarnataka('', lat: position.latitude, lng: position.longitude)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Selected location is outside Karnataka. Please select a place within Karnataka.'),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
     setState(() {
       selectedDestination = position;
       destinationSuggestions = [];
@@ -536,6 +591,18 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
     final destName = destinationController.text.trim().isNotEmpty
         ? destinationController.text.trim()
         : 'Selected Destination';
+
+    if (!KarnatakaPlacesRegistry.isPlaceInKarnataka(destName, lat: selectedDestination?.latitude, lng: selectedDestination?.longitude)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$destName is outside Karnataka. NextTripia is dedicated to trips within Karnataka.'),
+          backgroundColor: Colors.redAccent,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
     String cleanStart = currentLocationController.text.trim();
     if (cleanStart.isEmpty || cleanStart.startsWith('Location (') || RegExp(r'^\s*\(?\s*\d+\.\d+').hasMatch(cleanStart)) {
       if (currentLocation != null) {
@@ -553,6 +620,143 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
       'currentLocationName': cleanStart,
       'destinationName': destName,
     });
+  }
+
+  Future<void> _startNavigation() async {
+    if (selectedDestination == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select a destination first to start route navigation.'),
+          backgroundColor: Colors.orange,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    // Check location permission
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Location permission required to track route movement.'),
+              backgroundColor: Colors.redAccent,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+        return;
+      }
+    }
+
+    setState(() {
+      isNavigating = true;
+    });
+
+    // Start live GPS movement tracking along the route
+    _positionStreamSub?.cancel();
+    const locationSettings = LocationSettings(
+      accuracy: LocationAccuracy.bestForNavigation,
+      distanceFilter: 3,
+    );
+
+    _positionStreamSub = Geolocator.getPositionStream(locationSettings: locationSettings).listen((pos) {
+      if (!mounted) return;
+      final newPos = LatLng(pos.latitude, pos.longitude);
+      final speed = pos.speed >= 0 ? (pos.speed * 3.6) : 0.0;
+      final heading = pos.heading >= 0 ? pos.heading : _currentHeading;
+
+      setState(() {
+        currentLocation = newPos;
+        _currentHeading = heading;
+        _currentSpeedKmh = speed;
+      });
+
+      _addCurrentLocationMarker();
+
+      // Smooth camera follow in 3D navigation perspective
+      mapController?.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(
+            target: newPos,
+            zoom: 17.5,
+            tilt: 50.0,
+            bearing: heading,
+          ),
+        ),
+      );
+
+      // Re-estimate distance & travel time remaining
+      if (selectedDestination != null) {
+        final dist = _calculateDistance(newPos, selectedDestination!);
+        setState(() {
+          distanceInKm = dist;
+          travelTime = _estimateTravelTime(dist);
+        });
+      }
+    });
+
+    if (currentLocation != null) {
+      mapController?.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(
+            target: currentLocation!,
+            zoom: 17.5,
+            tilt: 50.0,
+            bearing: _currentHeading,
+          ),
+        ),
+      );
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.navigation_rounded, color: Colors.white, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text('Live navigation started to ${destinationController.text.trim().isNotEmpty ? destinationController.text.trim() : "Destination"}. Tracking your movement.'),
+              ),
+            ],
+          ),
+          backgroundColor: const Color(0xFF1E8E3E),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
+  void _stopNavigation() {
+    _positionStreamSub?.cancel();
+    _positionStreamSub = null;
+    setState(() {
+      isNavigating = false;
+      _currentSpeedKmh = 0.0;
+    });
+    _fitRouteBounds();
+  }
+
+  Future<void> _openNativeGoogleMapsNavigation() async {
+    if (selectedDestination == null) return;
+    final lat = selectedDestination!.latitude;
+    final lng = selectedDestination!.longitude;
+    final googleNavUri = Uri.parse('google.navigation:q=$lat,$lng&mode=d');
+    final webMapsUri = Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$lat,$lng&travelmode=driving');
+    try {
+      if (await canLaunchUrl(googleNavUri)) {
+        await launchUrl(googleNavUri, mode: LaunchMode.externalApplication);
+      } else {
+        await launchUrl(webMapsUri, mode: LaunchMode.externalApplication);
+      }
+    } catch (_) {
+      await launchUrl(webMapsUri, mode: LaunchMode.externalApplication);
+    }
   }
 
   @override
@@ -592,11 +796,78 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
               ),
 
             // 2. Google Maps Navigation Header (Start & Destination Inputs + Directions)
-            Positioned(
-              top: 12,
-              left: 14,
-              right: 14,
-              child: Column(
+            if (isNavigating)
+              Positioned(
+                top: 12,
+                left: 14,
+                right: 14,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E8E3E), // Google Maps Navigation Green
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.3),
+                        blurRadius: 14,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      Transform.rotate(
+                        angle: (_currentHeading * pi / 180),
+                        child: const Icon(Icons.navigation_rounded, color: Colors.white, size: 28),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              'Navigating to ${destinationController.text.trim().isNotEmpty ? destinationController.text.trim() : "Destination"}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              '${_currentSpeedKmh.toStringAsFixed(0)} km/h • ${distanceInKm != null ? "${distanceInKm!.toStringAsFixed(1)} km left" : "Tracking movement..."}',
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.9),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Open in Google Maps App',
+                        icon: const Icon(Icons.open_in_new_rounded, color: Colors.white, size: 20),
+                        onPressed: _openNativeGoogleMapsNavigation,
+                      ),
+                      IconButton(
+                        tooltip: 'Exit Navigation',
+                        icon: const Icon(Icons.close_rounded, color: Colors.white, size: 22),
+                        onPressed: _stopNavigation,
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else
+              Positioned(
+                top: 12,
+                left: 14,
+                right: 14,
+                child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Container(
@@ -1011,39 +1282,83 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                 ),
               ),
 
-            // 5. Done Button at Bottom
+            // 5. Navigation & Done Buttons at Bottom
             Positioned(
               bottom: 16,
               left: 14,
               right: 14,
-              child: SizedBox(
-                height: 54,
-                child: ElevatedButton(
-                  onPressed: _handleDone,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF4285F4), // Google Maps Primary Blue
-                    foregroundColor: Colors.white,
-                    elevation: 6,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.check_circle_rounded, size: 20),
-                      const SizedBox(width: 8),
-                      Text(
-                        selectedDestination != null ? 'Done • Set Destination' : 'Done',
+              child: Row(
+                children: [
+                  // Start Navigation Button (Tracks movement & directs to destination)
+                  SizedBox(
+                    height: 54,
+                    child: ElevatedButton.icon(
+                      onPressed: isNavigating ? _stopNavigation : _startNavigation,
+                      icon: Icon(
+                        isNavigating ? Icons.stop_rounded : Icons.navigation_rounded,
+                        size: 20,
+                        color: Colors.white,
+                      ),
+                      label: Text(
+                        isNavigating ? 'Stop' : 'Start',
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
                           letterSpacing: 0.3,
+                          color: Colors.white,
                         ),
                       ),
-                    ],
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: isNavigating
+                            ? const Color(0xFFEF4444)
+                            : const Color(0xFF1E8E3E), // Google Maps Navigation Green
+                        foregroundColor: Colors.white,
+                        elevation: 6,
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                    ),
                   ),
-                ),
+                  const SizedBox(width: 10),
+                  // Done Button
+                  Expanded(
+                    child: SizedBox(
+                      height: 54,
+                      child: ElevatedButton(
+                        onPressed: _handleDone,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF4285F4), // Google Maps Primary Blue
+                          foregroundColor: Colors.white,
+                          elevation: 6,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.check_circle_rounded, size: 20),
+                            const SizedBox(width: 8),
+                            Flexible(
+                              child: Text(
+                                selectedDestination != null ? 'Done • Set Destination' : 'Done',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -1054,6 +1369,7 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
 
   @override
   void dispose() {
+    _positionStreamSub?.cancel();
     currentLocationController.dispose();
     destinationController.dispose();
     super.dispose();

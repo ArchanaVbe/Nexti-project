@@ -5,6 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'services/presence_service.dart';
 import 'services/trip_invite_service.dart';
+import 'widgets/google_logo.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -349,7 +350,7 @@ class _LoginScreenState extends State<LoginScreen> {
             top: 0,
             left: 0,
             right: 0,
-            height: size.height * 0.65,
+            height: size.height * 0.78,
             child: Container(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
@@ -358,12 +359,13 @@ class _LoginScreenState extends State<LoginScreen> {
                   colors: [
                     Colors.white,
                     Colors.white,
-                    Colors.white.withValues(alpha: 0.92),
+                    Colors.white.withValues(alpha: 0.96),
+                    Colors.white.withValues(alpha: 0.90),
                     Colors.white.withValues(alpha: 0.65),
-                    Colors.white.withValues(alpha: 0.15),
+                    Colors.white.withValues(alpha: 0.20),
                     Colors.transparent,
                   ],
-                  stops: const [0.0, 0.28, 0.45, 0.62, 0.82, 1.0],
+                  stops: const [0.0, 0.35, 0.55, 0.72, 0.84, 0.93, 1.0],
                 ),
               ),
             ),
@@ -382,16 +384,23 @@ class _LoginScreenState extends State<LoginScreen> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       mainAxisSize: MainAxisSize.min,
-                      children: const [
-                        Icon(Icons.public, size: 20, color: Colors.black87),
-                        SizedBox(width: 8),
-                        Text(
+                      children: [
+                        Transform.rotate(
+                          angle: -0.4,
+                          child: const Icon(
+                            Icons.send_rounded,
+                            color: Color(0xFF6366F1),
+                            size: 24,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        const Text(
                           'NextTripia AI',
                           style: TextStyle(
-                            fontSize: 17,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: -0.2,
-                            color: Colors.black87,
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -0.3,
+                            color: Color(0xFF1E1B4B),
                           ),
                         ),
                       ],
@@ -439,30 +448,14 @@ class _LoginScreenState extends State<LoginScreen> {
                         borderRadius: BorderRadius.circular(10),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Container(
-                              width: 22,
-                              height: 22,
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                border: Border.all(color: Colors.red.shade400, width: 1.5),
-                              ),
-                              child: const Text(
-                                'G',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w900,
-                                  color: Colors.red,
-                                  fontSize: 13,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            const Text(
+                          children: const [
+                            GoogleLogo(size: 22),
+                            SizedBox(width: 12),
+                            Text(
                               'Log in with Google',
                               style: TextStyle(
-                                color: Colors.black87,
-                                fontWeight: FontWeight.w500,
+                                color: Color(0xFF1E293B),
+                                fontWeight: FontWeight.w600,
                                 fontSize: 14.5,
                               ),
                             ),
@@ -554,12 +547,12 @@ class _LoginScreenState extends State<LoginScreen> {
                       alignment: Alignment.centerLeft,
                       child: GestureDetector(
                         onTap: _handleForgotPassword,
-                        child: Text(
+                        child: const Text(
                           'Forgot Password?',
                           style: TextStyle(
-                            fontSize: 12.5,
-                            color: Colors.blue.shade600,
-                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                            color: Color(0xFF4338CA),
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
                       ),
@@ -603,25 +596,46 @@ class _LoginScreenState extends State<LoginScreen> {
                     const SizedBox(height: 14),
 
                     // Sign up
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Text(
-                          "Don't have an account? ",
-                          style: TextStyle(fontSize: 12.5, color: Colors.black87),
-                        ),
-                        GestureDetector(
-                          onTap: _handleSignUp,
-                          child: Text(
-                            'Sign up',
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.92),
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.05),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Text(
+                            "Don't have an account? ",
                             style: TextStyle(
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.blue.shade600,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF0F172A),
                             ),
                           ),
-                        ),
-                      ],
+                          GestureDetector(
+                            onTap: _handleSignUp,
+                            child: const Text(
+                              'Sign up',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFF4338CA),
+                                decoration: TextDecoration.underline,
+                                decorationColor: Color(0xFF4338CA),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),

@@ -869,7 +869,11 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           _selectedCityLat = destLatLng.latitude;
           _selectedCityLng = destLatLng.longitude;
         }
-        _destinationError = null;
+        if (!KarnatakaPlacesRegistry.isPlaceInKarnataka(destName, lat: destLatLng?.latitude, lng: destLatLng?.longitude)) {
+          _destinationError = 'This app is only for Karnataka. "$destName" is outside Karnataka.';
+        } else {
+          _destinationError = null;
+        }
         _startDateError = null;
         _stepWarningMessage = null;
         _citySuggestions = [];
@@ -957,13 +961,27 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       setState(() {
         _citySuggestions = [];
         _isSearchingCity = false;
+        _destinationError = null;
       });
       return;
     }
 
-    setState(() {
-      _isSearchingCity = true;
-    });
+    final bool isOutside = KarnatakaPlacesRegistry.isExplicitlyOutsideKarnataka(clean) ||
+        (!KarnatakaPlacesRegistry.isPlaceInKarnataka(clean) && clean.length >= 3);
+
+    if (isOutside) {
+      setState(() {
+        _citySuggestions = [];
+        _isSearchingCity = false;
+        _destinationError = 'This app is only for Karnataka. "$clean" is outside Karnataka.';
+      });
+      return;
+    } else {
+      setState(() {
+        _destinationError = null;
+        _isSearchingCity = true;
+      });
+    }
 
     _cityDebounce = Timer(const Duration(milliseconds: 150), () async {
       try {
@@ -987,6 +1005,26 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   Future<void> _selectCitySuggestion(CitySuggestion suggestion) async {
     _cityDebounce?.cancel();
     final cityName = suggestion.description.split(',').first.trim();
+
+    if (!KarnatakaPlacesRegistry.isPlaceInKarnataka(suggestion.description)) {
+      setState(() {
+        _citySuggestions = [];
+        _isSearchingCity = false;
+        _destinationError = 'This app is only for Karnataka. "$cityName" is outside Karnataka.';
+        _destinationController.clear();
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('This app is only for Karnataka. "$cityName" is outside Karnataka.'),
+            backgroundColor: const Color(0xFFEF4444),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
     _destinationController.text = cityName;
     setState(() {
       _citySuggestions = [];
@@ -997,6 +1035,22 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     try {
       final res = await TripApi.resolveCity(suggestion.placeId);
       if (mounted) {
+        if (!KarnatakaPlacesRegistry.isPlaceInKarnataka(cityName, lat: res.lat, lng: res.lng)) {
+          setState(() {
+            _selectedCityLat = null;
+            _selectedCityLng = null;
+            _destinationController.clear();
+            _destinationError = '$cityName is outside Karnataka.';
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('$cityName is outside Karnataka. NextTripia is dedicated to trips within Karnataka.'),
+              backgroundColor: const Color(0xFFEF4444),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+          return;
+        }
         setState(() {
           _selectedCityPlaceId = res.placeId;
           _selectedCityLat = res.lat;
@@ -1218,19 +1272,22 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     } else if (destText.length > 100) {
       destErr = 'Destination must be within 100 characters';
       hasError = true;
+    } else if (!KarnatakaPlacesRegistry.isPlaceInKarnataka(destText, lat: _selectedCityLat, lng: _selectedCityLng)) {
+      destErr = 'This app is only for Karnataka. "$destText" is outside Karnataka.';
+      hasError = true;
     }
 
     setState(() {
       _destinationError = destErr;
       if (hasError && showWarning) {
-        _stepWarningMessage = 'Please enter a destination city first.';
+        _stepWarningMessage = destErr ?? 'Please enter a destination city in Karnataka.';
       } else if (!hasError) {
         _stepWarningMessage = null;
       }
     });
 
     if (hasError && showWarning) {
-      _showFillPreviousWarning('Please enter a destination city first.');
+      _showFillPreviousWarning(destErr ?? 'Please enter a destination city in Karnataka.');
     }
 
     return !hasError;
@@ -2218,12 +2275,6 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
               : null,
           onChanged: (val) {
             _onCityChanged(val);
-            if (_destinationError != null || _stepWarningMessage != null) {
-              setState(() {
-                _destinationError = null;
-                _stepWarningMessage = null;
-              });
-            }
           },
           onTap: () {
             if (!_isHost) {
@@ -3900,13 +3951,17 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   Widget _buildStepDivider(bool isActive, bool isDark) {
     return Expanded(
       child: Container(
-        height: 2,
-        margin: const EdgeInsets.only(bottom: 18, left: 2, right: 2),
-        decoration: BoxDecoration(
-          color: isActive
-              ? const Color(0xFF6366F1)
-              : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
-          borderRadius: BorderRadius.circular(1),
+        height: 32,
+        alignment: Alignment.center,
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+        child: Container(
+          height: 2.5,
+          decoration: BoxDecoration(
+            color: isActive
+                ? const Color(0xFF6366F1)
+                : (isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1)),
+            borderRadius: BorderRadius.circular(2),
+          ),
         ),
       ),
     );
@@ -4209,7 +4264,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                   onPressed: () async {
                     if (_currentStep < maxSteps) {
                       if (_currentStep == 1) {
-                        if (!_validateStep1(showWarning: false)) {
+                        if (!_validateStep1(showWarning: true)) {
                           return;
                         }
 

@@ -626,7 +626,7 @@ class HomeTabScreen extends StatelessWidget {
             ),
             const SizedBox(width: 8),
             Text(
-              'NexTripia-AI',
+              'NextTripia AI',
               style: TextStyle(
                 fontSize: 21,
                 fontWeight: FontWeight.w800,

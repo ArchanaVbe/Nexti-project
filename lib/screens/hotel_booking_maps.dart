@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 import '../services/karnataka_places.dart';
 import '../services/road_routing_service.dart';
 
@@ -22,6 +23,7 @@ class Hotel {
   final String checkOutTime;
   final List<String> amenities;
   final String description;
+  final String? websiteUrl;
 
   Hotel({
     required this.id,
@@ -39,7 +41,139 @@ class Hotel {
     required this.checkOutTime,
     required this.amenities,
     required this.description,
+    this.websiteUrl,
   });
+
+  Hotel copyWith({
+    String? id,
+    String? name,
+    double? rating,
+    int? reviews,
+    String? address,
+    double? distance,
+    Duration? travelTime,
+    String? imageUrl,
+    double? latitude,
+    double? longitude,
+    int? pricePerNight,
+    String? checkInTime,
+    String? checkOutTime,
+    List<String>? amenities,
+    String? description,
+    String? websiteUrl,
+  }) {
+    return Hotel(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      rating: rating ?? this.rating,
+      reviews: reviews ?? this.reviews,
+      address: address ?? this.address,
+      distance: distance ?? this.distance,
+      travelTime: travelTime ?? this.travelTime,
+      imageUrl: imageUrl ?? this.imageUrl,
+      latitude: latitude ?? this.latitude,
+      longitude: longitude ?? this.longitude,
+      pricePerNight: pricePerNight ?? this.pricePerNight,
+      checkInTime: checkInTime ?? this.checkInTime,
+      checkOutTime: checkOutTime ?? this.checkOutTime,
+      amenities: amenities ?? this.amenities,
+      description: description ?? this.description,
+      websiteUrl: websiteUrl ?? this.websiteUrl,
+    );
+  }
+
+  /// Fetches the hotel's official website or verified Google Maps page directly from Google Place Details API
+  static Future<String?> fetchOfficialWebsite(String placeId) async {
+    if (placeId.isEmpty || placeId.startsWith('gen') || placeId.startsWith('custom')) return null;
+    try {
+      const apiKey = RoadRoutingService.googleMapsApiKey;
+      final url = Uri.parse(
+        'https://maps.googleapis.com/maps/api/place/details/json?place_id=$placeId&fields=name,website,url&key=$apiKey',
+      );
+      final res = await http.get(url).timeout(const Duration(seconds: 4));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        if (data['status'] == 'OK' && data['result'] is Map) {
+          final result = data['result'] as Map<String, dynamic>;
+          final website = result['website']?.toString();
+          if (website != null && website.isNotEmpty && website.startsWith('http')) {
+            return website;
+          }
+          final gUrl = result['url']?.toString();
+          if (gUrl != null && gUrl.isNotEmpty && gUrl.startsWith('http')) {
+            return gUrl;
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  static Future<void> launchBookingUrl(BuildContext context, Hotel hotel) async {
+    String? targetUrl = hotel.websiteUrl;
+
+    // 1. If not already a direct official website, retrieve from Google Place Details API
+    if (targetUrl == null || !targetUrl.startsWith('http') || targetUrl.contains('google.com/travel')) {
+      final fetched = await fetchOfficialWebsite(hotel.id);
+      if (fetched != null && fetched.isNotEmpty) {
+        targetUrl = fetched;
+      }
+    }
+
+    // 2. If no direct website is listed in Google Places, open direct Google search
+    // for the hotel's official website booking (which always shows their official page and booking directly)
+    if (targetUrl == null || targetUrl.isEmpty || targetUrl.contains('google.com/travel')) {
+      final cleanCity = hotel.address.split(',').length > 1
+          ? hotel.address.split(',')[1].trim()
+          : 'Karnataka';
+      targetUrl = 'https://www.google.com/search?q=${Uri.encodeComponent('${hotel.name} $cleanCity official website booking')}';
+    }
+
+    final uri = Uri.parse(targetUrl);
+    try {
+      final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!launched) {
+        await launchUrl(uri, mode: LaunchMode.platformDefault);
+      }
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Opening official booking page for ${hotel.name}...'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  static String toEnglishOnly(String text) {
+    if (text.isEmpty) return text;
+    String cleaned = text;
+    final devanagariReplacements = {
+      'श्री': 'Sri',
+      'विरूपाक्ष': 'Virupaksha',
+      'टेम्पल': 'Temple',
+      'मंदिर': 'Temple',
+      'देवालय': 'Temple',
+      'होटल': 'Hotel',
+      'रिसॉर्ट': 'Resort',
+      'मार्ग': 'Marg',
+      'रोड': 'Road',
+      'नगर': 'Nagar',
+      'गेट': 'Gate',
+      'बाजार': 'Bazaar',
+      'सर्कल': 'Circle',
+      'धर्मशाला': 'Dharamshala',
+    };
+    for (final entry in devanagariReplacements.entries) {
+      cleaned = cleaned.replaceAll(entry.key, entry.value);
+    }
+    // Remove any remaining Devanagari Unicode characters (\u0900-\u097F)
+    cleaned = cleaned.replaceAll(RegExp(r'[\u0900-\u097F]+'), '');
+    cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ').replaceAll(' ,', ',').replaceAll(',,', ',').trim();
+    return cleaned;
+  }
 }
 
 class HotelBookingMaps extends StatefulWidget {
@@ -129,7 +263,7 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
     try {
       final textQuery = Uri.encodeComponent('hotels in $destination Karnataka');
       final textUrl = Uri.parse(
-        'https://maps.googleapis.com/maps/api/place/textsearch/json?query=$textQuery&key=$apiKey',
+        'https://maps.googleapis.com/maps/api/place/textsearch/json?query=$textQuery&language=en&key=$apiKey',
       );
       final res = await http.get(textUrl).timeout(const Duration(seconds: 6));
       if (res.statusCode == 200) {
@@ -156,6 +290,7 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
           '?location=${center.latitude},${center.longitude}'
           '&radius=25000'
           '&type=lodging'
+          '&language=en'
           '&key=$apiKey',
         );
         final res = await http.get(nearbyUrl).timeout(const Duration(seconds: 6));
@@ -182,12 +317,14 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
   Hotel? _parseGooglePlaceToHotel(dynamic item) {
     try {
       final placeId = item['place_id']?.toString() ?? UniqueKey().toString();
-      final name = item['name']?.toString() ?? 'Hotel';
+      final cleanName = Hotel.toEnglishOnly(item['name']?.toString() ?? 'Hotel');
       final rating = (item['rating'] as num?)?.toDouble() ?? 4.0;
       final reviews = (item['user_ratings_total'] as num?)?.toInt() ?? 45;
-      final address = item['formatted_address']?.toString() ??
+      final rawAddress = item['formatted_address']?.toString() ??
           item['vicinity']?.toString() ??
-          '$name, Karnataka';
+          '$cleanName, Karnataka';
+      final cleanAddress = Hotel.toEnglishOnly(rawAddress);
+      final websiteUrl = item['website']?.toString() ?? item['url']?.toString();
 
       final lat = (item['geometry']?['location']?['lat'] as num?)?.toDouble();
       final lng = (item['geometry']?['location']?['lng'] as num?)?.toDouble();
@@ -219,10 +356,10 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
 
       return Hotel(
         id: placeId,
-        name: name,
+        name: cleanName,
         rating: rating,
         reviews: reviews,
-        address: address,
+        address: cleanAddress,
         distance: distance,
         travelTime: travelTime,
         imageUrl: imageUrl,
@@ -234,7 +371,8 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
         amenities: rating >= 4.4
             ? ['Swimming Pool', 'Multi-cuisine Restaurant', 'Free WiFi', 'Air Conditioned', 'Room Service']
             : ['Air Conditioned', 'Free WiFi', '24/7 Front Desk', 'Room Service', 'Parking'],
-        description: '$name - Verified Google Maps stay located at $address. Rated ${rating.toStringAsFixed(1)}★ with $reviews+ reviews on Google Maps.',
+        description: '$cleanName - Verified Google Maps stay located at $cleanAddress. Rated ${rating.toStringAsFixed(1)}★ with $reviews+ reviews on Google Maps.',
+        websiteUrl: websiteUrl,
       );
     } catch (_) {
       return null;
@@ -598,6 +736,7 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
       checkOutTime: checkOut,
       amenities: amenities,
       description: description,
+      websiteUrl: 'https://www.google.com/travel/hotels?q=${Uri.encodeComponent('$name $address')}',
     );
   }
 
@@ -703,6 +842,24 @@ class _HotelBookingMapsState extends State<HotelBookingMaps> {
           ),
         ),
       );
+    }
+
+    // Prefetch official website in background
+    if (hotel.websiteUrl == null || !hotel.websiteUrl!.startsWith('http')) {
+      Hotel.fetchOfficialWebsite(hotel.id).then((officialSite) {
+        if (officialSite != null && officialSite.isNotEmpty && mounted) {
+          setState(() {
+            final idx = allHotels.indexWhere((h) => h.id == hotel.id);
+            if (idx != -1) {
+              final updated = allHotels[idx].copyWith(websiteUrl: officialSite);
+              allHotels[idx] = updated;
+              if (selectedHotel?.id == hotel.id) {
+                selectedHotel = updated;
+              }
+            }
+          });
+        }
+      });
     }
   }
 
@@ -1112,9 +1269,27 @@ class HotelCard extends StatelessWidget {
                           '${hotel.reviews} reviews',
                           style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
                         ),
-                        const Text(
-                          'View details →',
-                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF6366F1)),
+                        InkWell(
+                          onTap: () => Hotel.launchBookingUrl(context, hotel),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1E8E3E).withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: const Color(0xFF1E8E3E).withValues(alpha: 0.4)),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  'Book Online',
+                                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF1E8E3E)),
+                                ),
+                                SizedBox(width: 3),
+                                Icon(Icons.open_in_new_rounded, size: 11, color: Color(0xFF1E8E3E)),
+                              ],
+                            ),
+                          ),
                         ),
                       ],
                     ),
@@ -1308,45 +1483,6 @@ class HotelDetailsSheet extends StatelessWidget {
               ),
               const SizedBox(height: 14),
 
-              // Timings (Check-in & Check-out)
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFEEF2FF),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(Icons.login_rounded, size: 18, color: Color(0xFF6366F1)),
-                        const SizedBox(width: 6),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text('Check-in', style: TextStyle(fontSize: 10, color: Color(0xFF6366F1))),
-                            Text(hotel.checkInTime, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1E293B))),
-                          ],
-                        ),
-                      ],
-                    ),
-                    Row(
-                      children: [
-                        const Icon(Icons.logout_rounded, size: 18, color: Color(0xFF6366F1)),
-                        const SizedBox(width: 6),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text('Check-out', style: TextStyle(fontSize: 10, color: Color(0xFF6366F1))),
-                            Text(hotel.checkOutTime, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1E293B))),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
               const SizedBox(height: 16),
 
               // Description
@@ -1383,7 +1519,28 @@ class HotelDetailsSheet extends StatelessWidget {
                   );
                 }).toList(),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 18),
+
+              // Official Website Booking Button
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton.icon(
+                  onPressed: () => Hotel.launchBookingUrl(context, hotel),
+                  icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                  label: const Text(
+                    'Book on Official Website',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1E8E3E), // Google Maps Green
+                    foregroundColor: Colors.white,
+                    elevation: 3,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
 
               // Price & Confirm / Book button
               Row(

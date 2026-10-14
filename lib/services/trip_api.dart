@@ -206,13 +206,21 @@ class TripApi {
       return merged;
     }
 
-    // Graceful fallback
-    return [
-      CitySuggestion(
-        description: '$cleanQ, Karnataka, India',
-        placeId: 'city_${cleanQ.toLowerCase().replaceAll(' ', '_')}',
-      ),
-    ];
+    // Do not fabricate Karnataka suggestions for places explicitly outside Karnataka
+    if (KarnatakaPlacesRegistry.isExplicitlyOutsideKarnataka(cleanQ)) {
+      return [];
+    }
+
+    if (KarnatakaPlacesRegistry.isPlaceInKarnataka(cleanQ)) {
+      return [
+        CitySuggestion(
+          description: '$cleanQ, Karnataka, India',
+          placeId: 'city_${cleanQ.toLowerCase().replaceAll(' ', '_')}',
+        ),
+      ];
+    }
+
+    return [];
   }
 
   /// Reverse geocode coordinates to a clean human-readable address with area and city

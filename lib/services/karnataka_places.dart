@@ -2573,5 +2573,89 @@ class KarnatakaPlacesRegistry {
 
     return null;
   }
+
+  static const Set<String> nonKarnatakaStates = {
+    'andhra pradesh', 'andhra', 'ap',
+    'tamil nadu', 'tamilnadu', 'tn',
+    'kerala', 'telangana', 'maharashtra', 'goa',
+    'gujarat', 'rajasthan', 'madhya pradesh', 'uttar pradesh',
+    'bihar', 'west bengal', 'odisha', 'orissa', 'punjab', 'haryana',
+    'himachal pradesh', 'uttarakhand', 'assam', 'delhi', 'new delhi',
+    'jammu and kashmir', 'ladakh', 'chhattisgarh', 'jharkhand',
+  };
+
+  static const Set<String> majorNonKarnatakaCities = {
+    'hyderabad', 'chennai', 'mumbai', 'delhi', 'pune', 'kolkata',
+    'tirupati', 'vijayawada', 'visakhapatnam', 'kochi', 'cochin',
+    'thiruvananthapuram', 'trivandrum', 'coimbatore', 'madurai',
+    'panaji', 'margao', 'jaipur', 'ahmedabad', 'lucknow', 'chandigarh',
+    'nagpur', 'indore', 'bhopal', 'patna', 'vadodara', 'surat',
+    'salem', 'trichy', 'pondicherry', 'puducherry', 'kodaikanal', 'ooty',
+    'wayanad', 'munnar', 'alappuzha', 'alleppey', 'calicut', 'kozhikode',
+  };
+
+  static bool isExplicitlyOutsideKarnataka(String query) {
+    final clean = query.toLowerCase().trim();
+    if (clean.isEmpty) return false;
+    for (final s in nonKarnatakaStates) {
+      if (clean == s || clean.startsWith('$s,') || clean.contains(' $s') || clean.contains('$s ')) {
+        return true;
+      }
+    }
+    for (final c in majorNonKarnatakaCities) {
+      if (clean == c || clean.startsWith('$c,') || clean.contains(' $c') || clean.contains('$c ')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static bool isPlaceInKarnataka(String query, {double? lat, double? lng}) {
+    final clean = query.toLowerCase().trim();
+    if (clean.isEmpty) return false;
+
+    if (isExplicitlyOutsideKarnataka(clean)) {
+      return false;
+    }
+
+    if (lat != null && lng != null && lat != 0.0 && lng != 0.0) {
+      final inLat = lat >= 11.55 && lat <= 18.55;
+      final inLng = lng >= 74.00 && lng <= 78.65;
+      if (!inLat || !inLng) {
+        return false;
+      }
+    }
+
+    if (clean.contains('karnataka')) return true;
+
+    if (resolvePlace(clean) != null) return true;
+
+    for (final dest in destinations) {
+      final dName = dest.name.toLowerCase();
+      if (dName.contains(clean) || clean.contains(dest.id.replaceAll('city_', '').replaceAll('_', ' '))) {
+        return true;
+      }
+      for (final kw in dest.keywords) {
+        if (kw.toLowerCase() == clean || clean.contains(kw.toLowerCase())) {
+          return true;
+        }
+      }
+    }
+
+    const karnatakaDistricts = [
+      'bagalkot', 'ballari', 'bellary', 'belagavi', 'belgaum', 'bengaluru', 'bangalore',
+      'bidar', 'chamarajanagar', 'chikkaballapur', 'chikkamagaluru', 'chikmagalur',
+      'chitradurga', 'dakshina kannada', 'davanagere', 'dharwad', 'gadag', 'hassan',
+      'haveri', 'kalaburagi', 'gulbarga', 'kodagu', 'coorg', 'kolar', 'koppal',
+      'mandya', 'mysuru', 'mysore', 'raichur', 'ramanagara', 'shivamogga', 'shimoga',
+      'tumakuru', 'tumkur', 'udupi', 'uttara kannada', 'vijayapura', 'bijapur',
+      'yadgir', 'vijayanagara', 'hospet', 'hosapete', 'hampi'
+    ];
+    for (final dist in karnatakaDistricts) {
+      if (clean == dist || clean.contains(dist)) return true;
+    }
+
+    return false;
+  }
 }
 
