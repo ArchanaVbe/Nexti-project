@@ -140,6 +140,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   int _approvedMemberCount = 1;
   final Set<String> _pendingRequestIdsHandled = {};
   bool _isShowingApprovalDialog = false;
+  bool _isPlacesConfirmed = false;
 
   @override
   void initState() {
@@ -384,6 +385,14 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                 Map<String, dynamic>.from(data['itineraryPlan']),
               );
             } catch (_) {}
+          }
+
+          // Real-time sync of places confirmation across members
+          if (data['placesConfirmed'] == true && !_isPlacesConfirmed) {
+            _isPlacesConfirmed = true;
+            if (_routePoints.isEmpty) {
+              _fetchRouteForMap();
+            }
           }
         });
       }
@@ -1533,28 +1542,28 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                 : (isDark ? const Color(0xFF1E293B) : Colors.white),
             contentPadding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
             border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(16.0),
               borderSide: BorderSide(
                 color: hasError
                     ? const Color(0xFFEF4444)
-                    : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                    : (isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1)),
                 width: hasError ? 1.5 : 1.0,
               ),
             ),
             enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(16.0),
               borderSide: BorderSide(
                 color: hasError
                     ? const Color(0xFFEF4444)
-                    : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                    : (isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1)),
                 width: hasError ? 1.5 : 1.0,
               ),
             ),
             focusedBorder: OutlineInputBorder(
-              borderRadius: const BorderRadius.all(Radius.circular(12)),
+              borderRadius: BorderRadius.circular(16.0),
               borderSide: BorderSide(
                 color: hasError ? const Color(0xFFEF4444) : const Color(0xFF6366F1),
-                width: 2,
+                width: 2.0,
               ),
             ),
           ),
@@ -2646,7 +2655,6 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildHalfPageRouteMap(isDark),
         if (_approvedMemberCount > 1 || !_isHost) ...[
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -3070,99 +3078,590 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildHalfPageRouteMap(isDark),
-        if (_approvedMemberCount > 1 || _groupPlaces.isNotEmpty) ...[
-          Container(
-            margin: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              color: const Color(0xFF6366F1).withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: const Color(0xFF6366F1).withValues(alpha: 0.25)),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.auto_awesome_rounded, color: Color(0xFF6366F1), size: 22),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Unified Group Itinerary',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14,
-                          color: Color(0xFF6366F1),
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        'Considering choices of all $_approvedMemberCount group member${_approvedMemberCount > 1 ? 's' : ''} (${allCombinedPlaces.length} places included).',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-
-        // Schedule Validation Warnings banner (Step 8 of PDF)
-        if (_itineraryPlan != null && _itineraryPlan!.warnings.isNotEmpty) ...[
-          Container(
-            margin: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF59E0B).withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.4)),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(Icons.warning_amber_rounded, color: Color(0xFFF59E0B), size: 22),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Schedule Validation Notice',
-                        style: TextStyle(
-                          fontSize: 13.5,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFFD97706),
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      ..._itineraryPlan!.warnings.map((w) => Padding(
-                        padding: const EdgeInsets.only(bottom: 2),
-                        child: Text(
-                          '• $w',
+        if (!_isPlacesConfirmed)
+          _buildFinalPlacesVotingReview(isDark, allCombinedPlaces)
+        else ...[
+          _buildConfirmedPlacesBanner(isDark, allCombinedPlaces),
+          if (_approvedMemberCount > 1 || _groupPlaces.isNotEmpty) ...[
+            Container(
+              margin: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFF6366F1).withValues(alpha: 0.25)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.auto_awesome_rounded, color: Color(0xFF6366F1), size: 22),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Unified Group Itinerary',
                           style: TextStyle(
-                            fontSize: 12,
-                            color: isDark ? const Color(0xFFFDE68A) : const Color(0xFF92400E),
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                            color: Color(0xFF6366F1),
                           ),
                         ),
-                      )),
-                    ],
+                        const SizedBox(height: 2),
+                        Text(
+                          'Considering choices of all $_approvedMemberCount group member${_approvedMemberCount > 1 ? 's' : ''} (${allCombinedPlaces.length} places included).',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
+          // Schedule Validation Warnings banner (Step 8 of PDF)
+          if (_itineraryPlan != null && _itineraryPlan!.warnings.isNotEmpty) ...[
+            Container(
+              margin: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF59E0B).withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.4)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: Color(0xFFF59E0B), size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Schedule Validation Notice',
+                          style: TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFFD97706),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        ..._itineraryPlan!.warnings.map((w) => Padding(
+                          padding: const EdgeInsets.only(bottom: 2),
+                          child: Text(
+                            '• $w',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: isDark ? const Color(0xFFFDE68A) : const Color(0xFF92400E),
+                            ),
+                          ),
+                        )),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
+          TripDetailsScreen(
+            trip: previewTrip,
+            isEmbedded: true,
+            scrollController: _scrollController,
+          ),
+        ],
+      ],
+    );
+  }
+
+  void _confirmFinalPlaces(List<String> places) async {
+    setState(() {
+      _isPlacesConfirmed = true;
+    });
+    if (_routePoints.isEmpty) {
+      _fetchRouteForMap();
+    }
+    await _syncPlacesConfirmationToFirestore();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Final places confirmed! Interactive route map generated.'),
+          backgroundColor: Color(0xFF4338CA),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _syncPlacesConfirmationToFirestore() async {
+    try {
+      await FirebaseFirestore.instance.collection('trips').doc(_tripCode).set({
+        'placesConfirmed': true,
+        'lastUpdated': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint('Error syncing places confirmation: $e');
+    }
+  }
+
+  Widget _buildConfirmedPlacesBanner(bool isDark, List<String> allCombinedPlaces) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF10B981).withValues(alpha: isDark ? 0.15 : 0.08),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: const Color(0xFF10B981).withValues(alpha: 0.35),
+          width: 1.2,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(6),
+            decoration: const BoxDecoration(
+              color: Color(0xFF10B981),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.check_rounded, color: Colors.white, size: 16),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Final Places Confirmed (${allCombinedPlaces.length} Stops)',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 13.5,
+                    color: Color(0xFF059669),
+                  ),
+                ),
+                const SizedBox(height: 1),
+                Text(
+                  'Interactive route map generated for all group members',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569),
                   ),
                 ),
               ],
             ),
           ),
+          TextButton(
+            onPressed: () {
+              setState(() {
+                _isPlacesConfirmed = false;
+              });
+            },
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: const Text(
+              'Edit Places',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF6366F1),
+              ),
+            ),
+          ),
         ],
+      ),
+    );
+  }
 
-        TripDetailsScreen(
-          trip: previewTrip,
-          isEmbedded: true,
-          scrollController: _scrollController,
+  Widget _buildFinalPlacesVotingReview(bool isDark, List<String> allCombinedPlaces) {
+    final sortedPlaces = List<String>.from(allCombinedPlaces);
+    sortedPlaces.sort((a, b) {
+      final aCount = (_groupPickCounts[a] ?? 0) + (_selectedPlaces.contains(a) ? 1 : 0);
+      final bCount = (_groupPickCounts[b] ?? 0) + (_selectedPlaces.contains(b) ? 1 : 0);
+      return bCount.compareTo(aCount);
+    });
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 1. Voting Summary Card
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: isDark
+                  ? [const Color(0xFF1E293B), const Color(0xFF0F172A)]
+                  : [const Color(0xFFEEF2FF), Colors.white],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: const Color(0xFF6366F1).withValues(alpha: isDark ? 0.4 : 0.25),
+              width: 1.5,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF6366F1).withValues(alpha: isDark ? 0.25 : 0.08),
+                blurRadius: 16,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF6366F1).withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: const Icon(
+                      Icons.how_to_vote_rounded,
+                      color: Color(0xFF6366F1),
+                      size: 26,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Trip Members Voting Results',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                            color: isDark ? Colors.white : const Color(0xFF0F172A),
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          'Review final places voted by the group before generating the interactive route map.',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                            height: 1.3,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              // Stats Pills
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF6366F1).withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.people_alt_rounded, size: 15, color: Color(0xFF6366F1)),
+                        const SizedBox(width: 6),
+                        Text(
+                          '$_approvedMemberCount Group Member${_approvedMemberCount > 1 ? 's' : ''}',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF6366F1),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.place_rounded, size: 15, color: Color(0xFF10B981)),
+                        const SizedBox(width: 6),
+                        Text(
+                          '${sortedPlaces.length} Selected Places',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF10B981),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
+
+        const SizedBox(height: 20),
+
+        // Section Title
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Final Places Breakdown',
+              style: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w800,
+                color: isDark ? Colors.white : const Color(0xFF0F172A),
+              ),
+            ),
+            Text(
+              'Ranked by votes',
+              style: TextStyle(
+                fontSize: 12,
+                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+
+        // List of Voted Places with consensus badges
+        ...sortedPlaces.map((place) {
+          final isSelectedByMe = _selectedPlaces.contains(place);
+          final otherVotes = _groupPickCounts[place] ?? 0;
+          final totalVotes = otherVotes + (isSelectedByMe ? 1 : 0);
+          final card = _findPlaceCard(place);
+          final isUnanimous = totalVotes >= _approvedMemberCount && _approvedMemberCount > 1;
+
+          return Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: isUnanimous
+                    ? const Color(0xFFF59E0B).withValues(alpha: 0.6)
+                    : (isSelectedByMe
+                        ? const Color(0xFF6366F1).withValues(alpha: 0.5)
+                        : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0))),
+                width: isUnanimous ? 1.6 : 1.2,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.04),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                // Inclusion Checkbox
+                IconButton(
+                  icon: Icon(
+                    isSelectedByMe ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                    color: isSelectedByMe ? const Color(0xFF6366F1) : const Color(0xFF94A3B8),
+                    size: 24,
+                  ),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  onPressed: () {
+                    setState(() {
+                      if (isSelectedByMe) {
+                        _selectedPlaces.remove(place);
+                      } else {
+                        _selectedPlaces.add(place);
+                      }
+                    });
+                    _syncPreferencesToFirestore();
+                  },
+                ),
+                const SizedBox(width: 12),
+
+                // Place Details
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              place,
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                                color: isDark ? Colors.white : const Color(0xFF0F172A),
+                              ),
+                            ),
+                          ),
+                          // Consensus / Vote Count Badge
+                          if (isUnanimous)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF59E0B).withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.4)),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.star_rounded, size: 13, color: Color(0xFFD97706)),
+                                  const SizedBox(width: 3),
+                                  Text(
+                                    'Unanimous ($totalVotes/$_approvedMemberCount)',
+                                    style: const TextStyle(
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFFD97706),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                          else if (totalVotes > 1)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF6366F1).withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                '👥 $totalVotes/$_approvedMemberCount votes',
+                                style: const TextStyle(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFF6366F1),
+                                ),
+                              ),
+                            )
+                          else if (isSelectedByMe)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF3B82F6).withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Text(
+                                '👤 Your Pick',
+                                style: TextStyle(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFF2563EB),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                      if (card != null) ...[
+                        const SizedBox(height: 5),
+                        Row(
+                          children: [
+                            if (card.rating > 0) ...[
+                              const Icon(Icons.star_rounded, size: 14, color: Colors.amber),
+                              const SizedBox(width: 2),
+                              Text(
+                                card.rating.toStringAsFixed(1),
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.amber,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                            ],
+                            if (card.distanceKm > 0) ...[
+                              Icon(
+                                Icons.near_me_outlined,
+                                size: 13,
+                                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                              ),
+                              const SizedBox(width: 2),
+                              Text(
+                                '${card.distanceKm.toStringAsFixed(1)} km away',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        }),
+
+        const SizedBox(height: 24),
+
+        // Primary Confirmation Action Button
+        Container(
+          width: double.infinity,
+          height: 54,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            gradient: const LinearGradient(
+              colors: [Color(0xFF6366F1), Color(0xFF4F46E5)],
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.35),
+                blurRadius: 14,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: ElevatedButton(
+            onPressed: () => _confirmFinalPlaces(sortedPlaces),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.transparent,
+              shadowColor: Colors.transparent,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: const [
+                Icon(Icons.check_circle_rounded, color: Colors.white, size: 22),
+                SizedBox(width: 10),
+                Text(
+                  'Done • Confirm Places & Show Route Map',
+                  style: TextStyle(
+                    fontSize: 15.5,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                    letterSpacing: 0.2,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 32),
       ],
     );
   }
@@ -3177,7 +3676,6 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildHalfPageRouteMap(isDark),
         Text(
           'Group Planning & QR Invite',
           style: TextStyle(
@@ -3738,6 +4236,11 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                         _scrollController.jumpTo(0);
                       }
                     } else {
+                      if (!_isPlacesConfirmed) {
+                        final allCombined = <String>{..._groupPlaces, ..._selectedPlaces}.toList();
+                        _confirmFinalPlaces(allCombined);
+                        return;
+                      }
                       await _saveTrip();
                     }
                   },
@@ -3753,7 +4256,9 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Text(
-                        isLastStep ? 'Save Trip' : 'Next',
+                        isLastStep
+                            ? (!_isPlacesConfirmed ? 'Confirm & Show Map' : 'Save Trip')
+                            : 'Next',
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
@@ -3762,7 +4267,9 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                       ),
                       const SizedBox(width: 8),
                       Icon(
-                        isLastStep ? Icons.check : Icons.arrow_forward, 
+                        isLastStep
+                            ? (!_isPlacesConfirmed ? Icons.map_rounded : Icons.check)
+                            : Icons.arrow_forward, 
                         color: Colors.white, 
                         size: 20
                       ),

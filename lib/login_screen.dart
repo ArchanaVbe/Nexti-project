@@ -159,7 +159,7 @@ class _LoginScreenState extends State<LoginScreen> {
               keyboardType: TextInputType.emailAddress,
               decoration: const InputDecoration(
                 hintText: 'Enter your email',
-                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.email_outlined),
               ),
             ),
           ],
@@ -243,7 +243,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 keyboardType: TextInputType.emailAddress,
                 decoration: const InputDecoration(
                   labelText: 'Email',
-                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.email_outlined),
                 ),
                 validator: (val) =>
                     (val == null || !val.contains('@')) ? 'Enter a valid email' : null,
@@ -254,7 +254,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 obscureText: true,
                 decoration: const InputDecoration(
                   labelText: 'Password (min 6 chars)',
-                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.lock_outline_rounded),
                 ),
                 validator: (val) =>
                     (val == null || val.length < 6) ? 'Minimum 6 characters required' : null,
@@ -494,36 +494,11 @@ class _LoginScreenState extends State<LoginScreen> {
                     TextFormField(
                       controller: _emailController,
                       keyboardType: TextInputType.emailAddress,
-                      style: const TextStyle(fontSize: 14, color: Colors.black87),
-                      decoration: InputDecoration(
+                      style: const TextStyle(fontSize: 14.5, color: Color(0xFF0F172A), fontWeight: FontWeight.w500),
+                      decoration: const InputDecoration(
                         labelText: 'Email',
-                        labelStyle: TextStyle(color: Colors.grey.shade600, fontSize: 14),
                         hintText: 'your@email.com',
-                        hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 13.5),
-                        prefixIcon: Icon(Icons.email_outlined, color: Colors.grey.shade600, size: 20),
-                        filled: true,
-                        fillColor: Colors.white.withValues(alpha: 0.92),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Colors.grey.shade300, width: 1),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Colors.grey.shade300, width: 1),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: Colors.black87, width: 1.5),
-                        ),
-                        errorBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Colors.red.shade400, width: 1.5),
-                        ),
-                        focusedErrorBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Colors.red.shade400, width: 1.5),
-                        ),
+                        prefixIcon: Icon(Icons.email_outlined),
                       ),
                       validator: (value) {
                         if (value == null || value.trim().isEmpty) {
@@ -542,42 +517,16 @@ class _LoginScreenState extends State<LoginScreen> {
                     TextFormField(
                       controller: _passwordController,
                       obscureText: _obscurePassword,
-                      style: const TextStyle(fontSize: 14, color: Colors.black87),
+                      style: const TextStyle(fontSize: 14.5, color: Color(0xFF0F172A), fontWeight: FontWeight.w500),
                       decoration: InputDecoration(
                         labelText: 'Password',
-                        labelStyle: TextStyle(color: Colors.grey.shade600, fontSize: 14),
                         hintText: '••••••',
-                        hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 13.5),
-                        prefixIcon: Icon(Icons.lock_outline_rounded, color: Colors.grey.shade600, size: 20),
-                        filled: true,
-                        fillColor: Colors.white.withValues(alpha: 0.92),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Colors.grey.shade300, width: 1),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Colors.grey.shade300, width: 1),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: Colors.black87, width: 1.5),
-                        ),
-                        errorBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Colors.red.shade400, width: 1.5),
-                        ),
-                        focusedErrorBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Colors.red.shade400, width: 1.5),
-                        ),
+                        prefixIcon: const Icon(Icons.lock_outline_rounded),
                         suffixIcon: IconButton(
                           icon: Icon(
                             _obscurePassword
                                 ? Icons.visibility_off_outlined
                                 : Icons.visibility_outlined,
-                            color: Colors.grey.shade600,
                             size: 20,
                           ),
                           onPressed: () {

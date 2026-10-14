@@ -654,19 +654,24 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                         // Starting Location Input
                         Row(
                           children: [
-                            Container(
-                              width: 10,
-                              height: 10,
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF4285F4),
-                                shape: BoxShape.circle,
-                                border: Border.all(color: Colors.white, width: 2),
-                                boxShadow: const [
-                                  BoxShadow(color: Colors.black26, blurRadius: 3),
-                                ],
+                            SizedBox(
+                              width: 22,
+                              child: Center(
+                                child: Container(
+                                  width: 10,
+                                  height: 10,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF4285F4),
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: Colors.white, width: 2),
+                                    boxShadow: const [
+                                      BoxShadow(color: Colors.black26, blurRadius: 3),
+                                    ],
+                                  ),
+                                ),
                               ),
                             ),
-                            const SizedBox(width: 12),
+                            const SizedBox(width: 8),
                             Expanded(
                               child: TextField(
                                 controller: currentLocationController,
@@ -681,48 +686,75 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                                     color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
                                     fontSize: 13,
                                   ),
-                                  isDense: true,
-                                  filled: false,
-                                  border: InputBorder.none,
-                                  contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                                  filled: true,
+                                  fillColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    borderSide: BorderSide(
+                                      color: isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
+                                      width: 1.0,
+                                    ),
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    borderSide: BorderSide(
+                                      color: isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
+                                      width: 1.0,
+                                    ),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    borderSide: const BorderSide(
+                                      color: Color(0xFF6366F1),
+                                      width: 2.0,
+                                    ),
+                                  ),
+                                  suffixIcon: isFetchingLocation
+                                      ? const Padding(
+                                          padding: EdgeInsets.all(12),
+                                          child: SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4285F4)),
+                                          ),
+                                        )
+                                      : IconButton(
+                                          icon: const Icon(Icons.my_location_rounded, color: Color(0xFF4285F4), size: 19),
+                                          tooltip: 'Fetch Current GPS Location',
+                                          padding: EdgeInsets.zero,
+                                          constraints: const BoxConstraints(),
+                                          onPressed: _fetchCurrentLocation,
+                                        ),
                                 ),
                               ),
                             ),
-                            if (isFetchingLocation)
-                              const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4285F4)),
-                              )
-                            else
-                              IconButton(
-                                icon: const Icon(Icons.my_location_rounded, color: Color(0xFF4285F4), size: 19),
-                                tooltip: 'Fetch Current GPS Location',
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(),
-                                onPressed: _fetchCurrentLocation,
-                              ),
                           ],
                         ),
 
                         // Divider with dots
                         Padding(
-                          padding: const EdgeInsets.only(left: 4.0, top: 4.0, bottom: 4.0),
+                          padding: const EdgeInsets.symmetric(vertical: 4.0),
                           child: Row(
                             children: [
-                              Column(
-                                children: [
-                                  Container(width: 2, height: 4, color: isDark ? const Color(0xFF475569) : const Color(0xFFCBD5E1)),
-                                  const SizedBox(height: 2),
-                                  Container(width: 2, height: 4, color: isDark ? const Color(0xFF475569) : const Color(0xFFCBD5E1)),
-                                ],
+                              SizedBox(
+                                width: 22,
+                                child: Center(
+                                  child: Column(
+                                    children: [
+                                      Container(width: 2, height: 4, color: isDark ? const Color(0xFF475569) : const Color(0xFFCBD5E1)),
+                                      const SizedBox(height: 2),
+                                      Container(width: 2, height: 4, color: isDark ? const Color(0xFF475569) : const Color(0xFFCBD5E1)),
+                                    ],
+                                  ),
+                                ),
                               ),
-                              const SizedBox(width: 18),
+                              const SizedBox(width: 8),
                               Expanded(
                                 child: Divider(
                                   height: 1,
                                   thickness: 0.8,
-                                  color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                                  color: isDark ? const Color(0xFF334155).withValues(alpha: 0.4) : const Color(0xFFE2E8F0),
                                 ),
                               ),
                             ],
@@ -732,7 +764,12 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                         // Destination Location Input
                         Row(
                           children: [
-                            const Icon(Icons.location_on_rounded, color: Color(0xFFEA4335), size: 18),
+                            const SizedBox(
+                              width: 22,
+                              child: Center(
+                                child: Icon(Icons.location_on_rounded, color: Color(0xFFEA4335), size: 19),
+                              ),
+                            ),
                             const SizedBox(width: 8),
                             Expanded(
                               child: TextField(
@@ -750,26 +787,51 @@ class _GoogleMapsSelectionState extends State<GoogleMapsSelection> {
                                     color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
                                     fontSize: 13,
                                   ),
-                                  isDense: true,
-                                  filled: false,
-                                  border: InputBorder.none,
-                                  contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                                  filled: true,
+                                  fillColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    borderSide: BorderSide(
+                                      color: isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
+                                      width: 1.0,
+                                    ),
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    borderSide: BorderSide(
+                                      color: isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
+                                      width: 1.0,
+                                    ),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    borderSide: const BorderSide(
+                                      color: Color(0xFF6366F1),
+                                      width: 2.0,
+                                    ),
+                                  ),
+                                  suffixIcon: isSearchingDestination
+                                      ? const Padding(
+                                          padding: EdgeInsets.all(12),
+                                          child: SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFEA4335)),
+                                          ),
+                                        )
+                                      : (destinationController.text.isNotEmpty
+                                          ? IconButton(
+                                              icon: const Icon(Icons.search_rounded, color: Color(0xFF6366F1), size: 20),
+                                              tooltip: 'Search route to destination',
+                                              padding: EdgeInsets.zero,
+                                              constraints: const BoxConstraints(),
+                                              onPressed: () => _resolveDestinationAndRoute(destinationController.text),
+                                            )
+                                          : null),
                                 ),
                               ),
                             ),
-                            if (isSearchingDestination)
-                              const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFEA4335)),
-                              )
-                            else if (destinationController.text.isNotEmpty)
-                              IconButton(
-                                icon: const Icon(Icons.search_rounded, color: Color(0xFF6366F1), size: 20),
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(),
-                                onPressed: () => _resolveDestinationAndRoute(destinationController.text),
-                              ),
                           ],
                         ),
                       ],

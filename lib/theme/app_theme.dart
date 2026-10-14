@@ -162,25 +162,49 @@ class AppTheme {
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: Colors.white,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
         labelStyle: const TextStyle(
           color: Color(0xFF334155),
           fontWeight: FontWeight.w600,
         ),
+        floatingLabelStyle: const TextStyle(
+          color: Color(0xFF6366F1),
+          fontWeight: FontWeight.w700,
+        ),
         hintStyle: const TextStyle(
-          color: Color(0xFF64748B),
+          color: Color(0xFF94A3B8),
           fontWeight: FontWeight.w500,
         ),
+        errorStyle: const TextStyle(
+          color: Color(0xFFEF4444),
+          fontWeight: FontWeight.w500,
+          fontSize: 12.0,
+        ),
+        prefixIconColor: const Color(0xFF64748B),
+        suffixIconColor: const Color(0xFF64748B),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16.0),
           borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16.0),
-          borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+          borderSide: const BorderSide(color: Color(0xFFCBD5E1), width: 1.0),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16.0),
           borderSide: const BorderSide(color: Color(0xFF6366F1), width: 2.0),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16.0),
+          borderSide: const BorderSide(color: Color(0xFFEF4444), width: 1.5),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16.0),
+          borderSide: const BorderSide(color: Color(0xFFEF4444), width: 2.0),
+        ),
+        disabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16.0),
+          borderSide: BorderSide(color: const Color(0xFFCBD5E1).withValues(alpha: 0.5)),
         ),
       ),
       cardTheme: const CardThemeData(
@@ -246,25 +270,49 @@ class AppTheme {
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: const Color(0xFF1E293B),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
         labelStyle: const TextStyle(
           color: Color(0xFFCBD5E1),
           fontWeight: FontWeight.w600,
+        ),
+        floatingLabelStyle: const TextStyle(
+          color: Color(0xFF818CF8),
+          fontWeight: FontWeight.w700,
         ),
         hintStyle: const TextStyle(
           color: Color(0xFF94A3B8),
           fontWeight: FontWeight.w500,
         ),
+        errorStyle: const TextStyle(
+          color: Color(0xFFF87171),
+          fontWeight: FontWeight.w500,
+          fontSize: 12.0,
+        ),
+        prefixIconColor: const Color(0xFF94A3B8),
+        suffixIconColor: const Color(0xFF94A3B8),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16.0),
           borderSide: const BorderSide(color: Color(0xFF334155)),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16.0),
-          borderSide: const BorderSide(color: Color(0xFF334155)),
+          borderSide: const BorderSide(color: Color(0xFF334155), width: 1.0),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16.0),
           borderSide: const BorderSide(color: Color(0xFF818CF8), width: 2.0),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16.0),
+          borderSide: const BorderSide(color: Color(0xFFF87171), width: 1.5),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16.0),
+          borderSide: const BorderSide(color: Color(0xFFF87171), width: 2.0),
+        ),
+        disabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16.0),
+          borderSide: BorderSide(color: const Color(0xFF334155).withValues(alpha: 0.5)),
         ),
       ),
       cardTheme: const CardThemeData(

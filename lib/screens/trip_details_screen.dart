@@ -698,8 +698,10 @@ Plan crafted with NexTripia-AI Travel Companion!
       curve: Curves.easeInOut,
       height: mapHeight,
       width: double.infinity,
+      margin: widget.isEmbedded ? const EdgeInsets.fromLTRB(16, 0, 16, 20) : EdgeInsets.zero,
       decoration: BoxDecoration(
         color: const Color(0xFFE2E8F0),
+        borderRadius: widget.isEmbedded ? BorderRadius.circular(20) : BorderRadius.zero,
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.08),
@@ -708,7 +710,9 @@ Plan crafted with NexTripia-AI Travel Companion!
           ),
         ],
       ),
-      child: Stack(
+      child: ClipRRect(
+        borderRadius: widget.isEmbedded ? BorderRadius.circular(19) : BorderRadius.zero,
+        child: Stack(
         children: [
           GoogleMap(
             initialCameraPosition: CameraPosition(
@@ -846,8 +850,9 @@ Plan crafted with NexTripia-AI Travel Companion!
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildMapFloatingButton({
     required IconData icon,

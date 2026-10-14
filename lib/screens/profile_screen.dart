@@ -940,24 +940,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
         filled: true,
         fillColor: readOnly ? const Color(0xFFF1F5F9) : const Color(0xFFF8F9FE),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(16.0),
           borderSide: BorderSide(
-            color: readOnly ? const Color(0xFFCBD5E1) : const Color(0xFF94A3B8),
-            width: 1.5,
+            color: readOnly ? const Color(0xFFCBD5E1) : const Color(0xFFCBD5E1),
+            width: 1.0,
           ),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(16.0),
           borderSide: BorderSide(
-            color: readOnly ? const Color(0xFFCBD5E1) : const Color(0xFF94A3B8),
-            width: 1.5,
+            color: readOnly ? const Color(0xFFCBD5E1) : const Color(0xFFCBD5E1),
+            width: 1.0,
           ),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(16.0),
           borderSide: BorderSide(
-            color: readOnly ? const Color(0xFFCBD5E1) : const Color(0xFF4F46E5),
-            width: 2.2,
+            color: readOnly ? const Color(0xFFCBD5E1) : const Color(0xFF6366F1),
+            width: 2.0,
           ),
         ),
       ),
