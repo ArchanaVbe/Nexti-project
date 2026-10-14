@@ -430,3 +430,248 @@ def build_daily_schedules_programmatic(
         "unfitted_stops": unfitted_stops,
         "warnings": list(set(warnings)),
     }
+
+
+# ----------------------------------------------------------------------
+# 4. ADK Replanning Agent & Smart Detour Helper
+# ----------------------------------------------------------------------
+
+REPLAN_INSTRUCTION = """
+You are an expert real-time travel replanning agent.
+The user is currently visiting or has reached a specific destination spot during their trip.
+They want to visit another nearby attraction ONLY near their current location without disturbing the next scheduled place in their itinerary.
+Your job is to analyze candidate nearby attractions, calculate travel time to the candidate, recommended visit duration, and travel time from candidate to the next planned stop.
+Verify that the detour fits comfortably within the time window before the next scheduled stop, and flag any time clashes.
+"""
+
+replan_agent = Agent(
+    name="replan_agent",
+    model=GEMINI_MODEL,
+    instruction=REPLAN_INSTRUCTION,
+    tools=[get_place_details, compute_route],
+)
+
+
+def _parse_departure_time_to_minutes(time_str: str) -> Optional[int]:
+    try:
+        clean = time_str.strip().upper()
+        if "-" in clean or "–" in clean:
+            parts = re.split(r"[-–]", clean)
+            if len(parts) >= 2:
+                v = _parse_single_time_to_minutes(parts[1].strip())
+                if v is not None:
+                    return v
+        return _parse_single_time_to_minutes(clean)
+    except Exception:
+        return None
+
+
+def _parse_arrival_time_to_minutes(time_str: str) -> Optional[int]:
+    try:
+        clean = time_str.strip().upper()
+        if "-" in clean or "–" in clean:
+            parts = re.split(r"[-–]", clean)
+            if len(parts) >= 1:
+                v = _parse_single_time_to_minutes(parts[0].strip())
+                if v is not None:
+                    return v
+        return _parse_single_time_to_minutes(clean)
+    except Exception:
+        return None
+
+
+def _parse_single_time_to_minutes(time_str: str) -> Optional[int]:
+    try:
+        clean = time_str.strip().upper()
+        m = re.search(r"(\d{1,2}):(\d{2})\s*(AM|PM)?", clean)
+        if not m:
+            return None
+        h = int(m.group(1))
+        mins = int(m.group(2))
+        ampm = m.group(3)
+        if ampm == "PM" and h < 12:
+            h += 12
+        elif ampm == "AM" and h == 12:
+            h = 0
+        return h * 60 + mins
+    except Exception:
+        return None
+
+
+def _parse_time_to_minutes(time_str: str) -> Optional[int]:
+    return _parse_departure_time_to_minutes(time_str)
+
+
+def _format_minutes_to_time(minutes_from_midnight: int) -> str:
+    """Formats minutes from midnight to 'HH:MM AM/PM'."""
+    m_wrap = minutes_from_midnight % (24 * 60)
+    h = m_wrap // 60
+    mins = m_wrap % 60
+    ampm = "AM" if h < 12 else "PM"
+    dh = h if 1 <= h <= 12 else (h - 12 if h > 12 else 12)
+    return f"{dh:02d}:{mins:02d} {ampm}"
+
+
+def suggest_replan_candidates(
+    current_place: str,
+    current_lat: float,
+    current_lng: float,
+    next_place: Optional[str],
+    next_lat: Optional[float],
+    next_lng: Optional[float],
+    current_time_str: str,
+    next_time_str: str,
+    available_minutes: int,
+    candidate_places: List[Dict[str, Any]],
+    existing_places: List[str],
+    max_radius_km: float = 15.0,
+) -> List[Dict[str, Any]]:
+    """Analyzes and scores nearby detour places near `current_place`.
+    Strictly considers time management and potential clashes with `next_place`.
+    """
+    from tools import haversine_distance_km
+
+    # Normalize existing places
+    norm_existing = {p.strip().lower() for p in existing_places if p}
+    norm_existing.add(current_place.strip().lower())
+    if next_place:
+        norm_existing.add(next_place.strip().lower())
+
+    # Calculate available window from time strings if valid
+    curr_mins = _parse_departure_time_to_minutes(current_time_str)
+    next_mins = _parse_arrival_time_to_minutes(next_time_str)
+    effective_window = available_minutes
+    if curr_mins is not None and next_mins is not None and next_mins > curr_mins:
+        effective_window = next_mins - curr_mins
+    elif curr_mins is not None and next_mins is not None and next_mins <= curr_mins:
+        effective_window = 35
+    if effective_window <= 0:
+        effective_window = 90
+
+    base_time_mins = curr_mins if curr_mins is not None else 660  # default 11:00 AM
+
+    scored_candidates = []
+
+    for cand in candidate_places:
+        c_name = cand.get("name", "Nearby Place")
+        c_name_norm = c_name.strip().lower()
+        clean_c = "".join(ch for ch in c_name_norm if ch.isalnum())
+        is_dup = False
+        for ex in norm_existing:
+            clean_ex = "".join(ch for ch in ex if ch.isalnum())
+            if not clean_c or not clean_ex:
+                continue
+            if clean_c == clean_ex:
+                is_dup = True
+                break
+            if len(clean_c) >= 8 and len(clean_ex) >= 8 and (clean_c.startswith(clean_ex) or clean_ex.startswith(clean_c)):
+                is_dup = True
+                break
+        if is_dup:
+            continue
+
+        c_lat = cand.get("lat")
+        c_lng = cand.get("lng")
+        if c_lat is None or c_lng is None:
+            continue
+
+        # Proximity filter: MUST be near current place (within max_radius_km)
+        dist_from_curr = haversine_distance_km(current_lat, current_lng, c_lat, c_lng)
+        if dist_from_curr > max_radius_km:
+            continue
+
+        # Travel time from current place to candidate (estimated ~2.2 min/km + 4 min base)
+        travel_from_curr = max(5, int(dist_from_curr * 2.2 + 4))
+
+        # Recommended visit duration based on place type / name
+        types = [t.lower() for t in cand.get("types", [])]
+        name_l = c_name.lower()
+        if any(w in name_l for w in ["view", "lookout", "point", "sunset", "statue"]):
+            visit_dur = 35
+            cat = "Sightseeing"
+        elif any(w in name_l for w in ["temple", "church", "fort", "palace", "museum"]):
+            visit_dur = 45
+            cat = "Culture"
+        elif any(w in name_l for w in ["falls", "lake", "park", "garden", "sanctuary"]):
+            visit_dur = 50
+            cat = "Nature"
+        elif any(w in name_l for w in ["cafe", "restaurant", "thali", "dosa", "food", "taste"]):
+            visit_dur = 40
+            cat = "Food"
+        elif any(w in name_l for w in ["trek", "rafting", "safari", "climb", "adventure"]):
+            visit_dur = 60
+            cat = "Adventure"
+        else:
+            visit_dur = 40
+            cat = "Sightseeing"
+
+        # Travel time from candidate to next planned place
+        if next_lat is not None and next_lng is not None and (next_lat != 0.0 or next_lng != 0.0):
+            dist_to_next = haversine_distance_km(c_lat, c_lng, next_lat, next_lng)
+            travel_to_next = max(5, int(dist_to_next * 2.2 + 4))
+        else:
+            travel_to_next = 15
+
+        # Suggested time slot
+        slot_start_mins = base_time_mins + travel_from_curr
+        slot_end_mins = slot_start_mins + visit_dur
+        suggested_slot = f"{_format_minutes_to_time(slot_start_mins)} – {_format_minutes_to_time(slot_end_mins)}"
+        next_arrival_mins = slot_end_mins + travel_to_next
+        next_arrival_str = _format_minutes_to_time(next_arrival_mins)
+
+        next_label = next_place if next_place else "Next Scheduled Stop"
+
+        if next_mins is not None:
+            buffer_min = next_mins - next_arrival_mins
+            if buffer_min >= 5:
+                time_status = "fits"
+                time_status_badge = f"No Clash ({buffer_min}m buffer)"
+                summary = f"Reach {next_label} by {next_arrival_str} ({buffer_min}m buffer before schedule)."
+            elif buffer_min >= -20:
+                time_status = "tight"
+                time_status_badge = f"Minor Shift ({abs(buffer_min)}m)"
+                summary = f"Reach {next_label} by {next_arrival_str} ({abs(buffer_min)}m schedule adjustment)."
+            else:
+                time_status = "clash"
+                time_status_badge = f"Shifts Stop (+{abs(buffer_min)}m)"
+                summary = f"Caution: reach {next_label} by {next_arrival_str} (+{abs(buffer_min)}m adjustment)."
+        else:
+            time_status = "fits"
+            time_status_badge = "No Clash"
+            summary = f"Reach {next_label} by {next_arrival_str} on schedule."
+
+        scored_candidates.append(
+            {
+                "name": c_name,
+                "place_id": cand.get("place_id", f"replan_{len(scored_candidates)}"),
+                "lat": c_lat,
+                "lng": c_lng,
+                "distance_km": round(dist_from_curr, 1),
+                "travel_from_current_min": travel_from_curr,
+                "visit_duration_min": visit_dur,
+                "travel_to_next_min": travel_to_next,
+                "total_time_min": total_time_needed,
+                "time_status": time_status,
+                "time_status_badge": time_status_badge,
+                "suggested_slot": suggested_slot,
+                "category": cat,
+                "rating": cand.get("rating", 4.5),
+                "summary": summary,
+                "address": cand.get("address", f"Near {current_place}"),
+                "_buffer_min": buffer_min,
+            }
+        )
+
+    # Sort: "fits" first, then "tight", then "clash"
+    # Within each group, closest distance first, then higher rating
+    status_priority = {"fits": 0, "tight": 1, "clash": 2}
+    scored_candidates.sort(
+        key=lambda item: (
+            status_priority.get(item["time_status"], 9),
+            item["distance_km"],
+            -item["rating"],
+        )
+    )
+
+    return scored_candidates
+

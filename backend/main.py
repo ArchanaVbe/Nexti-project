@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 env_path = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
-from runner import run_discover_async, run_plan_async
+from runner import run_discover_async, run_plan_async, run_replan_suggest_async
 from tools import haversine_distance_km
 from firebase_service import sync_discover_places_to_firestore, sync_trip_plan_to_firestore
 
@@ -88,6 +88,24 @@ class PlanRequest(BaseModel):
     end: Optional[str] = None
     travel_mode: Optional[str] = "DRIVE"
     session_token: Optional[str] = None
+
+
+class ReplanSuggestRequest(BaseModel):
+    trip_id: Optional[str] = "trip"
+    current_place: str
+    current_lat: float
+    current_lng: float
+    next_place: Optional[str] = None
+    next_lat: Optional[float] = None
+    next_lng: Optional[float] = None
+    current_time_str: Optional[str] = "11:00 AM"
+    next_time_str: Optional[str] = "02:00 PM"
+    available_minutes: Optional[int] = 120
+    city_or_region: Optional[str] = "Karnataka"
+    existing_places: Optional[List[str]] = []
+    max_radius_km: Optional[float] = 15.0
+    session_token: Optional[str] = None
+
 
 
 # Cache of discovered places by trip_id so planner can reference rich place data
@@ -710,6 +728,36 @@ async def handle_plan(req: PlanRequest):
     sync_trip_plan_to_firestore(req.trip_id, validated_itinerary)
 
     return validated_itinerary
+
+
+@app.post("/replan/suggest")
+async def handle_replan_suggest(req: ReplanSuggestRequest):
+    """Step 9: ADK endpoint for real-time trip replanning.
+    Finds attractions near current stop and analyzes time feasibility
+    to guarantee no clash with the next scheduled stop.
+    """
+    user_id = req.session_token or "traveler"
+    pool = list(TRIP_PLACES_CACHE.get(req.trip_id or "trip", []))
+
+    replan_result = await run_replan_suggest_async(
+        user_id=user_id,
+        trip_id=req.trip_id or "trip",
+        current_place=req.current_place,
+        current_lat=req.current_lat,
+        current_lng=req.current_lng,
+        next_place=req.next_place,
+        next_lat=req.next_lat,
+        next_lng=req.next_lng,
+        current_time_str=req.current_time_str or "11:00 AM",
+        next_time_str=req.next_time_str or "02:00 PM",
+        available_minutes=req.available_minutes or 120,
+        city_or_region=req.city_or_region or "Karnataka",
+        existing_places=req.existing_places or [],
+        max_radius_km=req.max_radius_km or 15.0,
+        pool_places=pool,
+    )
+    return replan_result
+
 
 
 if __name__ == "__main__":

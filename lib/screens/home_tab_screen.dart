@@ -5,11 +5,11 @@ import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import '../models/destination.dart';
+import 'one_day_trip_plan_screen.dart';
 import 'create_trip_screen.dart';
 import '../qr_scanner_screen.dart';
 
-class HomeTabScreen extends StatelessWidget {
+class HomeTabScreen extends StatefulWidget {
   final void Function(int index)? onNavigateTab;
 
   const HomeTabScreen({
@@ -17,13 +17,27 @@ class HomeTabScreen extends StatelessWidget {
     this.onNavigateTab,
   });
 
+  @override
+  State<HomeTabScreen> createState() => _HomeTabScreenState();
+}
+
+class _HomeTabScreenState extends State<HomeTabScreen> {
+  String? _selectedCity;
+  final TextEditingController _searchController = TextEditingController();
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
   void _navigateToCreateTrip(BuildContext context) async {
     final result = await Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => const CreateTripScreen()),
     );
     if (result == true) {
-      onNavigateTab?.call(1);
+      widget.onNavigateTab?.call(1);
     }
   }
 
@@ -397,7 +411,7 @@ class HomeTabScreen extends StatelessWidget {
         ),
       );
       if (result == true) {
-        onNavigateTab?.call(1);
+        widget.onNavigateTab?.call(1);
       }
       return;
     }
@@ -468,7 +482,7 @@ class HomeTabScreen extends StatelessWidget {
                 ),
               ).then((result) {
                 if (result == true) {
-                  onNavigateTab?.call(1);
+                  widget.onNavigateTab?.call(1);
                 }
               });
             }
@@ -565,8 +579,6 @@ class HomeTabScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final destinations = DestinationItem.sampleDestinations;
-
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: SafeArea(
@@ -593,13 +605,9 @@ class HomeTabScreen extends StatelessWidget {
               _buildQuickActions(context),
               const SizedBox(height: 28),
 
-              // Popular Destinations Header
-              _buildDestinationsHeader(context),
-              const SizedBox(height: 16),
-
-              // Popular Destinations Horizontal List
-              _buildDestinationsList(context, destinations),
-              const SizedBox(height: 28),
+              // Ready One-Day Trip Section (Curated Karnataka cities with famous food & places)
+              _buildOneDayTripSection(context),
+              const SizedBox(height: 36),
             ],
           ),
         ),
@@ -653,7 +661,7 @@ class HomeTabScreen extends StatelessWidget {
             ),
             const SizedBox(width: 4),
             GestureDetector(
-              onTap: () => onNavigateTab?.call(3), // Navigate to Profile tab
+              onTap: () => widget.onNavigateTab?.call(3), // Navigate to Profile tab
               child: Builder(
                 builder: (context) {
                   final user = FirebaseAuth.instance.currentUser;
@@ -760,6 +768,7 @@ class HomeTabScreen extends StatelessWidget {
       ),
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 2),
       child: TextField(
+        controller: _searchController,
         style: TextStyle(
           color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
           fontSize: 15,
@@ -779,10 +788,20 @@ class HomeTabScreen extends StatelessWidget {
           hintText: 'Where in Karnataka do you want to go?',
           hintStyle: TextStyle(
             color: isDark ? const Color(0xFF64748B) : const Color(0xFF64748B),
-            fontSize: 15,
+            fontSize: 14,
             fontWeight: FontWeight.w500,
           ),
         ),
+        onSubmitted: (query) {
+          if (query.trim().isNotEmpty) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => OneDayTripPlanScreen(city: query.trim()),
+              ),
+            );
+          }
+        },
       ),
     );
   }
@@ -896,172 +915,279 @@ class HomeTabScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildDestinationsHeader(BuildContext context) {
+  /// One-Day Ready Trip Section on Home Page
+  Widget _buildOneDayTripSection(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(
-          'Popular Destinations',
-          style: TextStyle(
-            fontSize: 19,
-            fontWeight: FontWeight.w800,
-            color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
-            letterSpacing: -0.3,
-          ),
-        ),
-        GestureDetector(
-          onTap: () => onNavigateTab?.call(2), // Navigate to Explore tab
-          behavior: HitTestBehavior.opaque,
-          child: const Padding(
-            padding: EdgeInsets.symmetric(vertical: 4.0),
-            child: Text(
-              'See All',
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: Color(0xFF6366F1),
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
+    final List<Map<String, String>> karnatakaCities = [
+      {'name': 'Mysuru', 'label': '👑 Mysuru (Mysore)'},
+      {'name': 'Bengaluru', 'label': '🏙️ Bengaluru (Bangalore)'},
+      {'name': 'Coorg', 'label': '☕ Coorg (Madikeri)'},
+      {'name': 'Hampi', 'label': '🏛️ Hampi (Vijayanagara)'},
+      {'name': 'Chikmagalur', 'label': '🌄 Chikmagalur'},
+      {'name': 'Udupi', 'label': '🛕 Udupi & Manipal'},
+      {'name': 'Gokarna', 'label': '🌊 Gokarna'},
+      {'name': 'Mangaluru', 'label': '🦀 Mangaluru (Mangalore)'},
+      {'name': 'Badami', 'label': '🏰 Badami & Pattadakal'},
+      {'name': 'Dandeli', 'label': '🚣 Dandeli'},
+      {'name': 'Davanagere', 'label': '🧈 Davanagere'},
+      {'name': 'Shimoga', 'label': '🌿 Shimoga (Shivamogga)'},
+      {'name': 'Belur', 'label': '🛕 Belur & Halebidu'},
+      {'name': 'Vijayapura', 'label': '🕌 Vijayapura (Bijapur)'},
+      {'name': 'Sakleshpur', 'label': '⛰️ Sakleshpur'},
+      {'name': 'Nandi Hills', 'label': '🌅 Nandi Hills'},
+      {'name': 'Chitradurga', 'label': '🛡️ Chitradurga'},
+      {'name': 'Bidar', 'label': '🏰 Bidar'},
+    ];
 
-  Widget _buildDestinationsList(BuildContext context, List<DestinationItem> destinations) {
-    return SizedBox(
-      height: 220,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        physics: const BouncingScrollPhysics(),
-        itemCount: destinations.length,
-        separatorBuilder: (context, index) => const SizedBox(width: 14),
-        itemBuilder: (context, index) {
-          final item = destinations[index];
-          return _buildDestinationCard(context, item);
-        },
-      ),
-    );
-  }
-
-  Widget _buildDestinationCard(BuildContext context, DestinationItem item) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    if (_selectedCity != null && !karnatakaCities.any((c) => c['name'] == _selectedCity)) {
+      _selectedCity = null;
+    }
 
     return Container(
-      width: 144,
+      width: double.infinity,
       decoration: BoxDecoration(
         color: isDark ? const Color(0xFF1E293B) : Colors.white,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(24),
         border: Border.all(
-          color: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9),
+          color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+          width: 1.2,
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.04),
-            blurRadius: 10,
+            color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.05),
+            blurRadius: 16,
             offset: const Offset(0, 4),
           ),
         ],
       ),
-      padding: const EdgeInsets.all(8.0),
+      padding: const EdgeInsets.all(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(14),
-            child: Image.network(
-              item.imageUrl,
-              width: double.infinity,
-              height: 120,
-              fit: BoxFit.cover,
-              errorBuilder: (context, error, stackTrace) {
-                return Container(
-                  width: double.infinity,
-                  height: 120,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [
-                        const Color(0xFF6366F1).withValues(alpha: 0.7),
-                        const Color(0xFF0284C7).withValues(alpha: 0.7),
-                      ],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
+          // Header Row
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
                   ),
-                  child: Center(
-                    child: Text(
-                      item.name,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
-                    ),
-                  ),
-                );
-              },
-              loadingBuilder: (context, child, loadingProgress) {
-                if (loadingProgress == null) return child;
-                return Container(
-                  width: double.infinity,
-                  height: 120,
-                  color: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9),
-                  child: const Center(
-                    child: SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Color(0xFF6366F1),
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          const SizedBox(height: 10),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  item.name,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 15,
-                    color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 4),
-                Row(
-                  children: [
-                    const Icon(
-                      Icons.location_on,
-                      size: 14,
-                      color: Color(0xFF4F46E5),
-                    ),
-                    const SizedBox(width: 3),
-                    Expanded(
-                      child: Text(
-                        '${item.district}, Karnataka',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF334155),
-                          fontWeight: FontWeight.w600,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF6366F1).withValues(alpha: 0.35),
+                      blurRadius: 8,
+                      offset: const Offset(0, 3),
                     ),
                   ],
                 ),
-              ],
+                child: const Icon(
+                  Icons.tour_rounded,
+                  color: Colors.white,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 6,
+                      runSpacing: 2,
+                      children: [
+                        Text(
+                          'One-Day Ready Trip',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                            color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
+                            letterSpacing: -0.3,
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Text(
+                            'Ready Plan',
+                            style: TextStyle(
+                              color: Color(0xFF10B981),
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Famous food spots & top exploring places',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                        fontWeight: FontWeight.w500,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+
+          // Dropdown Title
+          Text(
+            'Choose City in Karnataka',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
+              letterSpacing: 0.2,
+            ),
+          ),
+          const SizedBox(height: 8),
+
+          // Dropdown Field
+          DropdownButtonFormField<String>(
+            key: ValueKey(_selectedCity ?? 'none'),
+            initialValue: _selectedCity,
+            isExpanded: true,
+            hint: Text(
+              'Explore City',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+              ),
+            ),
+            dropdownColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            icon: const Icon(Icons.keyboard_arrow_down_rounded, color: Color(0xFF6366F1), size: 24),
+            style: TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+              color: isDark ? Colors.white : const Color(0xFF0F172A),
+            ),
+            decoration: InputDecoration(
+              filled: true,
+              fillColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              prefixIcon: const Icon(
+                Icons.location_on_rounded,
+                color: Color(0xFF6366F1),
+                size: 20,
+              ),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: BorderSide(
+                  color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                ),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: BorderSide(
+                  color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                ),
+              ),
+              focusedBorder: const OutlineInputBorder(
+                borderRadius: BorderRadius.all(Radius.circular(16)),
+                borderSide: BorderSide(color: Color(0xFF6366F1), width: 1.5),
+              ),
+            ),
+            items: karnatakaCities.map((c) {
+              return DropdownMenuItem<String>(
+                value: c['name'],
+                child: Text(
+                  c['label']!,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: isDark ? Colors.white : const Color(0xFF0F172A),
+                  ),
+                ),
+              );
+            }).toList(),
+            onChanged: (val) {
+              if (val != null) {
+                setState(() {
+                  _selectedCity = val;
+                });
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => OneDayTripPlanScreen(city: val),
+                  ),
+                );
+              }
+            },
+          ),
+          const SizedBox(height: 16),
+
+          // Primary Button to View 1-Day Plan
+          SizedBox(
+            width: double.infinity,
+            height: 50,
+            child: ElevatedButton(
+              onPressed: () {
+                if (_selectedCity == null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Please select a city from the dropdown to explore'),
+                      behavior: SnackBarBehavior.floating,
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                  return;
+                }
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => OneDayTripPlanScreen(city: _selectedCity!),
+                  ),
+                );
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF6366F1),
+                foregroundColor: Colors.white,
+                elevation: 3,
+                shadowColor: const Color(0xFF6366F1).withValues(alpha: 0.35),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.bolt_rounded, size: 20),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      _selectedCity == null
+                          ? 'Explore 1-Day Plan'
+                          : 'View 1-Day Plan for $_selectedCity',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.2,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  const Icon(Icons.arrow_forward_rounded, size: 18),
+                ],
+              ),
             ),
           ),
         ],

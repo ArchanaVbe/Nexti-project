@@ -1,14 +1,20 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'dart:math' as math;
 import '../models/trip_plan_models.dart';
 import '../services/karnataka_places.dart';
 import '../services/road_routing_service.dart';
+import '../services/one_day_trip_service.dart';
+import '../services/trip_api.dart';
 
 class TripDetailsScreen extends StatefulWidget {
   final Map<String, dynamic> trip;
@@ -16,6 +22,7 @@ class TripDetailsScreen extends StatefulWidget {
   final VoidCallback? onDelete;
   final bool isEmbedded;
   final ScrollController? scrollController;
+  final void Function(Map<String, dynamic> updatedTrip)? onTripUpdated;
 
   const TripDetailsScreen({
     super.key,
@@ -24,6 +31,7 @@ class TripDetailsScreen extends StatefulWidget {
     this.onDelete,
     this.isEmbedded = false,
     this.scrollController,
+    this.onTripUpdated,
   });
 
   @override
@@ -36,6 +44,9 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
   bool _isMapExpanded = false;
   String? _selectedPlace;
   final Set<String> _visitedPlaces = {};
+  int _selectedDayIndex = 0;
+  List<Map<String, dynamic>>? _activeSchedule;
+  List<Map<String, dynamic>>? _previousSchedule;
 
   late LatLng _destinationCenter;
   final Map<String, LatLng> _placeCoordinates = {};
@@ -137,6 +148,9 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
   @override
   void initState() {
     super.initState();
+    final rawPlaces = (widget.trip['places'] as List?)?.map((e) => e.toString()).toList() ?? [];
+    final daysCount = _calculateDaysCount();
+    _activeSchedule = _buildDailySchedule(rawPlaces, daysCount);
     _initializeCoordinatesAndMarkers();
     _initLiveUserLocation();
   }
@@ -154,6 +168,11 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
   @override
   void didUpdateWidget(covariant TripDetailsScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (_activeSchedule == null) {
+      final rawPlaces = (widget.trip['places'] as List?)?.map((e) => e.toString()).toList() ?? [];
+      final daysCount = _calculateDaysCount();
+      _activeSchedule = _buildDailySchedule(rawPlaces, daysCount);
+    }
     _initializeCoordinatesAndMarkers();
     if (_mapController != null) {
       _resetMapBounds();
@@ -877,7 +896,39 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
   }
 
   List<Map<String, dynamic>> _buildDailySchedule(List<String> places, int days) {
-    // 1. Check if AI-generated itinerary plan exists
+    final destination = widget.trip['destination'] ?? widget.trip['tripName'] ?? 'Karnataka';
+    final startStr = widget.trip['startDate']?.toString() ?? '';
+    final endStr = widget.trip['endDate']?.toString() ?? '';
+    final hotel = widget.trip['hotel']?.toString();
+    final startPoint = widget.trip['startPoint']?.toString();
+
+    // Parse date strings for each day
+    final List<String> dateStrings = [];
+    try {
+      DateTime? parseDate(String s) {
+        final parts = s.split(RegExp(r'[/.-]'));
+        if (parts.length == 3) {
+          int d = int.parse(parts[0]);
+          int m = int.parse(parts[1]);
+          int y = int.parse(parts[2]);
+          if (y < 100) y += 2000;
+          return DateTime(y, m, d);
+        }
+        return null;
+      }
+
+      final start = parseDate(startStr);
+      final end = parseDate(endStr);
+      if (start != null && end != null) {
+        DateTime cur = start;
+        while (!cur.isAfter(end) && dateStrings.length < days) {
+          dateStrings.add('${cur.day.toString().padLeft(2, '0')}/${cur.month.toString().padLeft(2, '0')}/${cur.year}');
+          cur = cur.add(const Duration(days: 1));
+        }
+      }
+    } catch (_) {}
+
+    // Check if AI-generated itinerary plan exists and is dense/complete
     final planData = widget.trip['itineraryPlan'];
     if (planData != null) {
       try {
@@ -885,64 +936,56 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
             ? planData
             : (planData is ItineraryPlan ? planData.toJson() : Map<String, dynamic>.from(planData));
         final scheduleList = (planMap['days'] ?? planMap['schedule']) as List?;
-        if (scheduleList != null && scheduleList.isNotEmpty) {
+        if (scheduleList != null && scheduleList.isNotEmpty && scheduleList.length >= days) {
           final List<Map<String, dynamic>> parsedSchedule = [];
+          bool hasSparseDay = false;
           for (var dayItem in scheduleList) {
             final dayMap = Map<String, dynamic>.from(dayItem);
-            final dayNum = dayMap['day_number'] ?? dayMap['dayNumber'] ?? (parsedSchedule.length + 1);
-            final dateStr = (dayMap['date'] ?? '').toString();
             final stopsList = (dayMap['stops'] as List?) ?? [];
-            final List<Map<String, String>> activities = [];
-
-            for (var stopItem in stopsList) {
-              final stopMap = Map<String, dynamic>.from(stopItem);
-              final placeName = (stopMap['name'] ?? stopMap['place_name'] ?? stopMap['placeName'] ?? '').toString();
-              final timeStr = (stopMap['time'] ?? '').toString();
-              final stopType = (stopMap['activity_type'] ?? stopMap['stop_type'] ?? stopMap['stopType'] ?? 'visit').toString().toUpperCase();
-              final activity = (stopMap['notes'] ?? stopMap['activity'] ?? '').toString();
-              final address = (stopMap['address'] ?? '').toString();
-              final durationMins = ((stopMap['duration_minutes'] ?? stopMap['duration_mins'] ?? stopMap['durationMins'] ?? 60) as num).toInt();
-              final transitMins = stopMap['travel_to_next_minutes'] ?? stopMap['transit_mins'] ?? stopMap['transitMins'];
-
-              String period = stopType;
-              if (stopType == 'START') {
-                period = (transitMins != null && (transitMins as num) > 0)
-                    ? 'START • ${_formatScheduleDuration(transitMins.toInt())} travel'
-                    : 'START • ${_formatScheduleDuration(durationMins)}';
-              } else if (stopType == 'END') {
-                period = 'END • NIGHT REST';
-              } else if (stopType == 'MEAL') {
-                period = 'MEAL • ${_formatScheduleDuration(durationMins)}';
-              } else if (stopType == 'BREAK') {
-                period = 'BREAK • ${_formatScheduleDuration(durationMins)}';
-              } else {
-                period = 'VISIT • ${_formatScheduleDuration(durationMins)}';
-                if (transitMins != null && (transitMins as num) >= 15) {
-                  period += ' (${_formatScheduleDuration(transitMins.toInt())} to next)';
-                }
-              }
-
-              activities.add({
-                'place': placeName.isNotEmpty ? placeName : (activity.isNotEmpty ? activity : 'Scheduled Stop'),
-                'time': timeStr.isNotEmpty ? timeStr : 'Flexible Time',
-                'period': period,
-                'activity': activity,
-                'address': address,
-                'stopType': stopType,
-              });
-            }
-
-            if (activities.isNotEmpty) {
-              parsedSchedule.add({
-                'dayNumber': dayNum,
-                'title': dateStr.isNotEmpty ? 'Day $dayNum • $dateStr' : 'Day $dayNum • Highlights',
-                'activities': activities,
-              });
+            if (stopsList.length < 5) {
+              hasSparseDay = true;
+              break;
             }
           }
+          if (!hasSparseDay) {
+            for (var dayItem in scheduleList) {
+              final dayMap = Map<String, dynamic>.from(dayItem);
+              final dayNum = dayMap['day_number'] ?? dayMap['dayNumber'] ?? (parsedSchedule.length + 1);
+              final dateStr = (dayMap['date'] ?? '').toString();
+              final stopsList = (dayMap['stops'] as List?) ?? [];
+              final List<Map<String, String>> activities = [];
 
-          if (parsedSchedule.isNotEmpty) {
-            return parsedSchedule;
+              for (var stopItem in stopsList) {
+                final stopMap = Map<String, dynamic>.from(stopItem);
+                final placeName = (stopMap['name'] ?? stopMap['place_name'] ?? stopMap['placeName'] ?? '').toString();
+                final timeStr = (stopMap['time'] ?? '').toString();
+                final stopType = (stopMap['activity_type'] ?? stopMap['stop_type'] ?? stopMap['stopType'] ?? 'visit').toString().toUpperCase();
+                final activity = (stopMap['notes'] ?? stopMap['activity'] ?? '').toString();
+                final address = (stopMap['address'] ?? '').toString();
+
+                activities.add({
+                  'place': placeName.isNotEmpty ? placeName : (activity.isNotEmpty ? activity : 'Scheduled Stop'),
+                  'time': timeStr.isNotEmpty ? timeStr : 'Flexible Time',
+                  'period': stopType,
+                  'activity': activity,
+                  'address': address,
+                  'stopType': stopType,
+                });
+              }
+
+              if (activities.isNotEmpty) {
+                parsedSchedule.add({
+                  'dayNumber': dayNum,
+                  'title': dateStr.isNotEmpty ? 'Day $dayNum • $dateStr' : 'Day $dayNum • Highlights',
+                  'date': dateStr,
+                  'activities': activities,
+                });
+              }
+            }
+
+            if (parsedSchedule.length >= days) {
+              return parsedSchedule;
+            }
           }
         }
       } catch (e) {
@@ -950,61 +993,15 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
       }
     }
 
-    // Fallback: heuristic distribution
-    if (places.isEmpty) return [];
-
-    int actualDays = math.max(1, math.min(days, places.length));
-    List<Map<String, dynamic>> schedule = [];
-
-    int placesPerDay = (places.length / actualDays).ceil();
-    int placeIdx = 0;
-
-    for (int day = 1; day <= actualDays; day++) {
-      List<Map<String, String>> dayActivities = [];
-
-      for (int p = 0; p < placesPerDay && placeIdx < places.length; p++) {
-        final placeName = places[placeIdx];
-        String timeSlot;
-        String period;
-
-        if (p == 0) {
-          timeSlot = (day == 1) ? '10:15 AM - 12:00 PM' : '09:00 AM - 12:30 PM';
-          period = 'Morning Visit';
-        } else if (p == 1) {
-          timeSlot = '02:30 PM - 05:00 PM';
-          period = 'Afternoon Sights';
-        } else {
-          timeSlot = '05:30 PM - 07:00 PM';
-          period = 'Sunset & Evening Tour';
-        }
-
-        dayActivities.add({
-          'place': placeName,
-          'time': timeSlot,
-          'period': period,
-          'activity': 'Explore and enjoy $placeName',
-          'address': '',
-          'stopType': 'VISIT',
-        });
-
-        placeIdx++;
-      }
-
-      schedule.add({
-        'dayNumber': day,
-        'title': 'Day $day • Highlights',
-        'activities': dayActivities,
-      });
-    }
-
-    return schedule;
-  }
-
-  static String _formatScheduleDuration(int minutes) {
-    if (minutes < 60) return '${minutes}m';
-    final h = minutes ~/ 60;
-    final m = minutes % 60;
-    return m == 0 ? '${h}h' : '${h}h ${m}m';
+    // Always generate the optimized, gap-free, clash-free schedule with exact number of days
+    return OneDayTripService.buildMultiDayPlanForTrip(
+      destination: destination.toString(),
+      numberOfDays: days,
+      selectedPlaces: places,
+      dateStrings: dateStrings.isNotEmpty ? dateStrings : null,
+      hotel: hotel,
+      startPoint: startPoint,
+    );
   }
 
   void _shareTripPlan() {
@@ -1042,7 +1039,8 @@ Plan crafted with NexTripia-AI Travel Companion!
     final groupSize = widget.trip['groupSize'] ?? '1';
     final places = (widget.trip['places'] as List?)?.map((e) => e.toString()).toList() ?? [];
     final daysCount = _calculateDaysCount();
-    final schedule = _buildDailySchedule(places, daysCount);
+    final schedule = _activeSchedule ?? _buildDailySchedule(places, daysCount);
+    _activeSchedule ??= schedule;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     final content = Column(
@@ -1723,26 +1721,35 @@ Plan crafted with NexTripia-AI Travel Companion!
     required Color color,
     required Color bg,
   }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 14, color: color),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-              color: color,
+    final maxBadgeWidth = MediaQuery.sizeOf(context).width - 72;
+    return Tooltip(
+      message: label,
+      child: Container(
+        constraints: BoxConstraints(maxWidth: maxBadgeWidth > 140 ? maxBadgeWidth : 260),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: color,
+                ),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -1804,6 +1811,1065 @@ Plan crafted with NexTripia-AI Travel Companion!
     );
   }
 
+  // -------------------------------------------------------------
+  // REPLAN TRIP: Banner, Bottom Sheet, and Conflict-Free Planner
+  // -------------------------------------------------------------
+  Widget _buildReplanTripBanner(List<Map<String, dynamic>> schedule) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: isDark
+              ? [
+                  const Color(0xFF1E1B4B).withValues(alpha: 0.8),
+                  const Color(0xFF1E293B),
+                ]
+              : [
+                  const Color(0xFFEEF2FF),
+                  Colors.white,
+                ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: const Color(0xFF6366F1).withValues(alpha: isDark ? 0.45 : 0.3),
+          width: 1.3,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF6366F1).withValues(alpha: isDark ? 0.16 : 0.08),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF6366F1).withValues(alpha: 0.35),
+                      blurRadius: 6,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.alt_route_rounded,
+                  color: Colors.white,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            'On-the-Go Trip Replan',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w800,
+                              color: isDark ? Colors.white : const Color(0xFF0F172A),
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: const Color(0xFF10B981).withValues(alpha: 0.4),
+                              width: 0.8,
+                            ),
+                          ),
+                          child: const Text(
+                            '⚡ ADK AI',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFF10B981),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Reached a spot? Discover nearby places that fit before your next planned stop without time clashes.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                        height: 1.3,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            height: 44,
+            child: ElevatedButton(
+              onPressed: () => _openReplanBottomSheet(schedule),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF6366F1),
+                foregroundColor: Colors.white,
+                elevation: 2,
+                shadowColor: const Color(0xFF6366F1).withValues(alpha: 0.4),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+              ),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.auto_awesome, size: 16, color: Colors.amber),
+                  SizedBox(width: 8),
+                  Text(
+                    'Replan Trip from Current Spot',
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                  SizedBox(width: 8),
+                  Icon(Icons.arrow_forward_rounded, size: 16),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _openReplanBottomSheet(
+    List<Map<String, dynamic>> schedule, {
+    String? preselectedPlace,
+    int? preselectedDayIndex,
+  }) {
+    if (schedule.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No schedule available to replan. Please add places first.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    int currentDayIdx = (preselectedDayIndex ?? _selectedDayIndex).clamp(0, schedule.length - 1);
+    List<ReplanSuggestion> suggestions = [];
+    bool isLoading = false;
+    String? statusMessage;
+    String? selectedPlaceName = preselectedPlace;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (bottomSheetContext) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final activeDayMap = schedule[currentDayIdx];
+            final rawActivities = (activeDayMap['activities'] as List?) ?? [];
+            final activities = rawActivities
+                .map((e) => Map<String, dynamic>.from(e as Map))
+                .toList();
+
+            // Resolve initial selected place name if null
+            if (selectedPlaceName == null || !activities.any((a) => (a['place'] ?? '').toString() == selectedPlaceName)) {
+              final firstAttraction = activities.firstWhere(
+                (a) => !((a['place'] ?? '').toString().toLowerCase().startsWith('start:')),
+                orElse: () => activities.isNotEmpty ? activities.first : <String, dynamic>{'place': 'Current Spot'},
+              );
+              selectedPlaceName = (firstAttraction['place'] ?? 'Current Spot').toString();
+            }
+
+            final currStopIndex = activities.indexWhere(
+              (a) => (a['place'] ?? '').toString() == selectedPlaceName,
+            );
+
+            // Determine next stop
+            String nextStopName = '';
+            String nextStopTime = '02:00 PM';
+
+            if (currStopIndex >= 0) {
+              if (currStopIndex < activities.length - 1) {
+                final nAct = activities[currStopIndex + 1];
+                nextStopName = (nAct['place'] ?? 'Next Stop').toString();
+                nextStopTime = (nAct['time'] ?? '02:00 PM').toString();
+              } else {
+                nextStopName = widget.trip['hotel']?.toString() ?? 'Hotel Base (Night Stay)';
+                nextStopTime = '08:30 PM';
+              }
+            } else {
+              nextStopName = widget.trip['hotel']?.toString() ?? 'Next Scheduled Spot';
+            }
+
+            // Function to query ADK backend for replan suggestions
+            void loadSuggestions() async {
+              setModalState(() {
+                isLoading = true;
+                statusMessage = 'ADK AI evaluating detours near ${selectedPlaceName ?? 'current spot'}...';
+                suggestions = [];
+              });
+
+              final currentDayActivities = ((schedule[currentDayIdx]['activities'] as List?) ?? [])
+                  .map((e) => Map<String, dynamic>.from(e as Map))
+                  .toList();
+
+              final curIdx = currentDayActivities.indexWhere(
+                (a) => (a['place'] ?? '').toString() == selectedPlaceName,
+              );
+
+              final effectiveCurrentPlace = selectedPlaceName ??
+                  (currentDayActivities.isNotEmpty ? (currentDayActivities.first['place'] ?? 'Current Spot').toString() : 'Current Spot');
+
+              final cAct = curIdx >= 0
+                  ? currentDayActivities[curIdx]
+                  : (currentDayActivities.isNotEmpty ? currentDayActivities.first : <String, dynamic>{});
+              final curStopTime = (cAct['time'] ?? '11:00 AM').toString();
+
+              String nStopName = '';
+              String nStopTime = '02:00 PM';
+              if (curIdx >= 0 && curIdx < currentDayActivities.length - 1) {
+                final nAct = currentDayActivities[curIdx + 1];
+                nStopName = (nAct['place'] ?? 'Next Stop').toString();
+                nStopTime = (nAct['time'] ?? '02:00 PM').toString();
+              } else {
+                nStopName = widget.trip['hotel']?.toString() ?? 'Hotel Base (Night Stay)';
+                nStopTime = '08:30 PM';
+              }
+
+              // Current place coordinates - highest accuracy lookup
+              LatLng? currCoord;
+              final aLat = (cAct['lat'] as num?)?.toDouble();
+              final aLng = (cAct['lng'] as num?)?.toDouble();
+              if (aLat != null && aLng != null && aLat != 0.0 && aLng != 0.0) {
+                currCoord = LatLng(aLat, aLng);
+              }
+              currCoord ??= _placeCoordinates[effectiveCurrentPlace];
+              if (currCoord == null) {
+                final sCoord = OneDayTripService.findStopCoordinate(effectiveCurrentPlace);
+                if (sCoord != null) currCoord = LatLng(sCoord.lat, sCoord.lng);
+              }
+              if (currCoord == null) {
+                final reg = KarnatakaPlacesRegistry.findPlaceCoordinate(
+                  effectiveCurrentPlace,
+                  destination: widget.trip['destination'] ?? 'Karnataka',
+                );
+                if (reg != null) currCoord = LatLng(reg.lat, reg.lng);
+              }
+              currCoord ??= _destinationCenter;
+
+              // Next place coordinates
+              LatLng? nextCoord;
+              if (curIdx >= 0 && curIdx < currentDayActivities.length - 1) {
+                final nAct = currentDayActivities[curIdx + 1];
+                final nLat = (nAct['lat'] as num?)?.toDouble();
+                final nLng = (nAct['lng'] as num?)?.toDouble();
+                if (nLat != null && nLng != null && nLat != 0.0 && nLng != 0.0) {
+                  nextCoord = LatLng(nLat, nLng);
+                }
+              }
+              nextCoord ??= _placeCoordinates[nStopName];
+              if (nextCoord == null) {
+                final sCoord = OneDayTripService.findStopCoordinate(nStopName);
+                if (sCoord != null) nextCoord = LatLng(sCoord.lat, sCoord.lng);
+              }
+              if (nextCoord == null) {
+                final reg = KarnatakaPlacesRegistry.findPlaceCoordinate(
+                  nStopName,
+                  destination: widget.trip['destination'] ?? 'Karnataka',
+                );
+                if (reg != null) nextCoord = LatLng(reg.lat, reg.lng);
+              }
+
+              final results = await TripApi.suggestReplanPlaces(
+                tripId: (widget.trip['tripCode'] ?? widget.trip['id'] ?? 'active_trip').toString(),
+                currentPlace: effectiveCurrentPlace,
+                currentLat: currCoord.latitude,
+                currentLng: currCoord.longitude,
+                nextPlace: nStopName,
+                nextLat: nextCoord?.latitude,
+                nextLng: nextCoord?.longitude,
+                currentTimeStr: curStopTime,
+                nextTimeStr: nStopTime,
+                availableMinutes: 120,
+                destination: (widget.trip['destination'] ?? 'Karnataka').toString(),
+                existingPlaces: _allPlaces,
+                maxRadiusKm: 15.0,
+              );
+
+              setModalState(() {
+                isLoading = false;
+                suggestions = results;
+                if (results.isEmpty) {
+                  statusMessage = 'No additional nearby detours found. Tap Refresh to re-scan.';
+                } else {
+                  statusMessage = null;
+                }
+              });
+            }
+
+            // Auto-load once on sheet open
+            if (suggestions.isEmpty && !isLoading && statusMessage == null) {
+              Future.microtask(() => loadSuggestions());
+            }
+
+            return Container(
+              height: MediaQuery.of(context).size.height * 0.88,
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF0F172A) : Colors.white,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.35),
+                    blurRadius: 20,
+                    offset: const Offset(0, -6),
+                  ),
+                ],
+              ),
+              child: Column(
+                children: [
+                  // Drag Handle
+                  Container(
+                    margin: const EdgeInsets.only(top: 10, bottom: 6),
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+
+                  // Header
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(7),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF6366F1).withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: const Icon(Icons.alt_route_rounded, color: Color(0xFF6366F1), size: 20),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Smart Trip Replan',
+                                      style: TextStyle(
+                                        fontSize: 17,
+                                        fontWeight: FontWeight.w800,
+                                        color: isDark ? Colors.white : const Color(0xFF0F172A),
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    Text(
+                                      'Explore nearby • Zero clash with next stop',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          icon: Icon(Icons.close_rounded, color: isDark ? Colors.white70 : Colors.black54),
+                          onPressed: () => Navigator.pop(bottomSheetContext),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Divider(height: 1, color: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9)),
+
+                  // Scrollable Content
+                  Expanded(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // 1. Day Selector Tabs
+                          Text(
+                            'Active Trip Day',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          SizedBox(
+                            height: 38,
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              itemCount: schedule.length,
+                              separatorBuilder: (_, index) => const SizedBox(width: 8),
+                              itemBuilder: (context, idx) {
+                                final isSel = idx == currentDayIdx;
+                                return ChoiceChip(
+                                  label: Text('Day ${idx + 1}'),
+                                  selected: isSel,
+                                  onSelected: (selected) {
+                                    if (selected) {
+                                      setModalState(() {
+                                        currentDayIdx = idx;
+                                        selectedPlaceName = null;
+                                      });
+                                      loadSuggestions();
+                                    }
+                                  },
+                                  selectedColor: const Color(0xFF6366F1),
+                                  labelStyle: TextStyle(
+                                    color: isSel ? Colors.white : (isDark ? Colors.white70 : const Color(0xFF334155)),
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                  backgroundColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                );
+                              },
+                            ),
+                          ),
+
+                          const SizedBox(height: 16),
+
+                          // 2. Current Stop Dropdown / Selector
+                          Text(
+                            'Where are you currently located?',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                              ),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: selectedPlaceName,
+                                isExpanded: true,
+                                icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF6366F1)),
+                                dropdownColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+                                items: activities.map((a) {
+                                  final pName = (a['place'] ?? '').toString();
+                                  final pTime = (a['time'] ?? '').toString();
+                                  return DropdownMenuItem<String>(
+                                    value: pName,
+                                    child: Row(
+                                      children: [
+                                        const Icon(Icons.location_on_rounded, size: 16, color: Color(0xFF6366F1)),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            pName,
+                                            style: TextStyle(
+                                              fontSize: 13.5,
+                                              fontWeight: FontWeight.w600,
+                                              color: isDark ? Colors.white : const Color(0xFF0F172A),
+                                            ),
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        Text(
+                                          pTime,
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }).toList(),
+                                onChanged: (newVal) {
+                                  if (newVal != null) {
+                                    setModalState(() {
+                                      selectedPlaceName = newVal;
+                                    });
+                                    loadSuggestions();
+                                  }
+                                },
+                              ),
+                            ),
+                          ),
+
+                          const SizedBox(height: 12),
+
+                          // 3. Time Management & Next Stop Context Card
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF6366F1).withValues(alpha: isDark ? 0.12 : 0.06),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                color: const Color(0xFF6366F1).withValues(alpha: 0.25),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF6366F1).withValues(alpha: 0.2),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(Icons.schedule_rounded, color: Color(0xFF6366F1), size: 18),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Next Planned Destination:',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                          color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        '$nextStopName • Scheduled at $nextStopTime',
+                                        style: const TextStyle(
+                                          fontSize: 12.5,
+                                          fontWeight: FontWeight.w800,
+                                          color: Color(0xFF6366F1),
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
+                          const SizedBox(height: 16),
+
+                          // 5. Suggestions Header & Refresh
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Recommended Nearby Detours',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w800,
+                                    color: isDark ? Colors.white : const Color(0xFF0F172A),
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              if (isLoading)
+                                const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF6366F1)),
+                                )
+                              else
+                                InkWell(
+                                  onTap: loadSuggestions,
+                                  child: const Text(
+                                    'Refresh 🔄',
+                                    style: TextStyle(fontSize: 12, color: Color(0xFF6366F1), fontWeight: FontWeight.bold),
+                                  ),
+                                ),
+                            ],
+                          ),
+
+                          const SizedBox(height: 10),
+
+                          if (isLoading) ...[
+                            Container(
+                              padding: const EdgeInsets.all(28),
+                              alignment: Alignment.center,
+                              child: Column(
+                                children: [
+                                  const CircularProgressIndicator(color: Color(0xFF6366F1)),
+                                  const SizedBox(height: 14),
+                                  Text(
+                                    statusMessage ?? 'Evaluating nearby spots & schedule clash...',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 12.5,
+                                      color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ] else if (statusMessage != null && suggestions.isEmpty) ...[
+                            Container(
+                              padding: const EdgeInsets.all(20),
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: Text(
+                                statusMessage!,
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                ),
+                              ),
+                            ),
+                          ] else ...[
+                            ...suggestions.map((s) {
+                              final isFit = s.timeStatus == 'fits';
+                              final isTight = s.timeStatus == 'tight';
+                              final badgeColor = isFit
+                                  ? const Color(0xFF10B981)
+                                  : (isTight ? const Color(0xFFF59E0B) : const Color(0xFFEF4444));
+
+                              return Container(
+                                margin: const EdgeInsets.only(bottom: 12),
+                                padding: const EdgeInsets.all(14),
+                                decoration: BoxDecoration(
+                                  color: isDark ? const Color(0xFF1E293B) : Colors.white,
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(
+                                    color: isFit
+                                        ? const Color(0xFF10B981).withValues(alpha: 0.3)
+                                        : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                                  ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.03),
+                                      blurRadius: 6,
+                                      offset: const Offset(0, 2),
+                                    ),
+                                  ],
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            s.name,
+                                            style: TextStyle(
+                                              fontSize: 14.5,
+                                              fontWeight: FontWeight.w800,
+                                              color: isDark ? Colors.white : const Color(0xFF0F172A),
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                          decoration: BoxDecoration(
+                                            color: badgeColor.withValues(alpha: 0.12),
+                                            borderRadius: BorderRadius.circular(8),
+                                            border: Border.all(color: badgeColor.withValues(alpha: 0.3)),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                isFit ? Icons.check_circle_outline : (isTight ? Icons.alarm : Icons.warning_amber_rounded),
+                                                size: 12,
+                                                color: badgeColor,
+                                              ),
+                                              const SizedBox(width: 4),
+                                              Text(
+                                                s.timeStatusBadge,
+                                                style: TextStyle(
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.w800,
+                                                  color: badgeColor,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Row(
+                                      children: [
+                                        const Icon(
+                                          Icons.near_me_rounded,
+                                          size: 13.5,
+                                          color: Color(0xFF6366F1),
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Expanded(
+                                          child: Text(
+                                            '${s.distanceKm} km from ${(selectedPlaceName ?? "current spot").split("(").first.trim()} • ${s.travelFromCurrentMinutes} min drive',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w600,
+                                              color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 5),
+                                    Row(
+                                      children: [
+                                        Icon(
+                                          Icons.schedule_rounded,
+                                          size: 13.5,
+                                          color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Expanded(
+                                          child: Text(
+                                            'Suggested Detour: ${s.suggestedSlot} (${s.visitDurationMinutes}m visit)',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w600,
+                                              color: isDark ? const Color(0xFFE2E8F0) : const Color(0xFF1E293B),
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 5),
+                                    Row(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Padding(
+                                          padding: const EdgeInsets.only(top: 2),
+                                          child: Icon(
+                                            isFit ? Icons.verified_rounded : (isTight ? Icons.access_time_rounded : Icons.warning_amber_rounded),
+                                            size: 13.5,
+                                            color: badgeColor,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Expanded(
+                                          child: Text(
+                                            s.summary,
+                                            style: TextStyle(
+                                              fontSize: 11.5,
+                                              color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                              height: 1.25,
+                                            ),
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 12),
+                                    SizedBox(
+                                      width: double.infinity,
+                                      height: 38,
+                                      child: ElevatedButton(
+                                        onPressed: () {
+                                          Navigator.pop(bottomSheetContext);
+                                          _applyReplanSuggestion(
+                                            currentDayIdx,
+                                            currStopIndex,
+                                            s,
+                                          );
+                                        },
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: isFit ? const Color(0xFF6366F1) : (isTight ? const Color(0xFFD97706) : const Color(0xFF475569)),
+                                          foregroundColor: Colors.white,
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(10),
+                                          ),
+                                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                                          elevation: 0,
+                                        ),
+                                        child: FittedBox(
+                                          fit: BoxFit.scaleDown,
+                                          child: Text(
+                                            isFit
+                                                ? 'Add & Replan Schedule (Zero Clash)'
+                                                : (isTight ? 'Add with Schedule Shift' : 'Add Anyway (May delay next stop)'),
+                                            style: const TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _applyReplanSuggestion(
+    int dayIdx,
+    int insertAfterStopIdx,
+    ReplanSuggestion suggestion,
+  ) async {
+    // 1. Snapshot previous schedule for undo support
+    _previousSchedule = _activeSchedule != null
+        ? jsonDecode(jsonEncode(_activeSchedule))
+        : null;
+
+    final updatedSchedule = List<Map<String, dynamic>>.from(
+      (_activeSchedule ?? []).map((d) {
+        final dayMap = Map<String, dynamic>.from(d);
+        final acts = List<Map<String, dynamic>>.from(
+          ((dayMap['activities'] as List?) ?? []).map((a) => Map<String, dynamic>.from(a as Map)),
+        );
+        dayMap['activities'] = acts;
+        return dayMap;
+      }),
+    );
+
+    if (dayIdx >= updatedSchedule.length) return;
+
+    final targetDay = updatedSchedule[dayIdx];
+    final acts = targetDay['activities'] as List<Map<String, dynamic>>;
+
+    final newAct = <String, dynamic>{
+      'place': suggestion.name,
+      'time': suggestion.suggestedSlot,
+      'period': suggestion.category.toUpperCase(),
+      'activity': suggestion.summary.isNotEmpty
+          ? suggestion.summary
+          : 'Detour visit near ${suggestion.address ?? 'current location'}',
+      'address': suggestion.address ?? 'Near current spot',
+      'stopType': 'VISIT',
+    };
+
+    final insertIdx = (insertAfterStopIdx >= 0 && insertAfterStopIdx < acts.length)
+        ? insertAfterStopIdx + 1
+        : acts.length;
+
+    acts.insert(insertIdx, newAct);
+
+    // Smoothly shift subsequent stops to guarantee zero schedule clashes
+    final detourEndMin = TripApi.parseTimeToMinutes(suggestion.suggestedSlot, preferEnd: true);
+    if (detourEndMin != null) {
+      int runningTimeMin = detourEndMin + suggestion.travelToNextMinutes;
+      for (int i = insertIdx + 1; i < acts.length; i++) {
+        final act = acts[i];
+        final actTimeStr = (act['time'] ?? '').toString();
+        final origStart = TripApi.parseTimeToMinutes(actTimeStr, preferEnd: false);
+        final origEnd = TripApi.parseTimeToMinutes(actTimeStr, preferEnd: true);
+        int dur = 60;
+        if (origStart != null && origEnd != null && origEnd > origStart) {
+          dur = origEnd - origStart;
+        }
+
+        if (origStart != null && runningTimeMin > origStart) {
+          final newStart = runningTimeMin;
+          final newEnd = newStart + dur;
+          act['time'] = '${TripApi.formatMinutesToTime(newStart)} - ${TripApi.formatMinutesToTime(newEnd)}';
+          runningTimeMin = newEnd + 15;
+        } else if (origEnd != null) {
+          runningTimeMin = origEnd + 15;
+        }
+      }
+    }
+
+    // 2. Update places list and coordinates
+    if (!_allPlaces.contains(suggestion.name)) {
+      _allPlaces.add(suggestion.name);
+    }
+    _placeCoordinates[suggestion.name] = LatLng(suggestion.lat, suggestion.lng);
+
+    setState(() {
+      _activeSchedule = updatedSchedule;
+      _selectedPlace = suggestion.name;
+      _selectedDayIndex = dayIdx;
+    });
+
+    // 3. Update widget.trip
+    widget.trip['places'] = _allPlaces;
+    final Map<String, dynamic> coordMap = {};
+    _placeCoordinates.forEach((k, v) {
+      coordMap[k] = {'lat': v.latitude, 'lng': v.longitude};
+    });
+    widget.trip['placeCoordinates'] = coordMap;
+    widget.trip['itineraryPlan'] = {
+      'schedule': updatedSchedule,
+      'days': updatedSchedule,
+    };
+
+    // 4. Update map markers and camera
+    _initializeCoordinatesAndMarkers();
+    _focusOnPlace(suggestion.name);
+
+    // 5. Persist to storage
+    await _persistUpdatedTrip();
+
+    // 6. Notify parent widget (e.g. CreateTripScreen)
+    widget.onTripUpdated?.call(widget.trip);
+
+    // 7. Show success feedback
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.check_circle_rounded, color: Colors.white, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Trip replanned! Added ${suggestion.name} without schedule clash.',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: const Color(0xFF059669),
+        behavior: SnackBarBehavior.floating,
+        action: SnackBarAction(
+          label: 'UNDO',
+          textColor: Colors.white,
+          onPressed: () {
+            if (_previousSchedule != null) {
+              setState(() {
+                _activeSchedule = _previousSchedule;
+                _allPlaces.remove(suggestion.name);
+                _placeCoordinates.remove(suggestion.name);
+                widget.trip['places'] = _allPlaces;
+                widget.trip['itineraryPlan'] = {
+                  'schedule': _activeSchedule,
+                  'days': _activeSchedule,
+                };
+              });
+              _initializeCoordinatesAndMarkers();
+              _persistUpdatedTrip();
+              widget.onTripUpdated?.call(widget.trip);
+            }
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _persistUpdatedTrip() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final user = FirebaseAuth.instance.currentUser;
+      final userEmail = user?.email?.trim().toLowerCase() ??
+          prefs.getString('user_profile_email')?.trim().toLowerCase() ?? '';
+      final storageKey = userEmail.isNotEmpty ? 'saved_trips_$userEmail' : 'saved_trips';
+      final savedTrips = prefs.getStringList(storageKey) ?? [];
+
+      final tripCode = (widget.trip['tripCode'] ?? widget.trip['id'] ?? '').toString();
+      if (tripCode.isNotEmpty) {
+        bool found = false;
+        for (int i = 0; i < savedTrips.length; i++) {
+          try {
+            final decoded = jsonDecode(savedTrips[i]);
+            if (decoded['tripCode']?.toString() == tripCode || decoded['id']?.toString() == tripCode) {
+              savedTrips[i] = jsonEncode(widget.trip);
+              found = true;
+              break;
+            }
+          } catch (_) {}
+        }
+        if (found) {
+          await prefs.setStringList(storageKey, savedTrips);
+        }
+        final genericList = prefs.getStringList('saved_trips');
+        if (genericList != null) {
+          for (int i = 0; i < genericList.length; i++) {
+            try {
+              final decoded = jsonDecode(genericList[i]);
+              if (decoded['tripCode']?.toString() == tripCode || decoded['id']?.toString() == tripCode) {
+                genericList[i] = jsonEncode(widget.trip);
+                await prefs.setStringList('saved_trips', genericList);
+                break;
+              }
+            } catch (_) {}
+          }
+        }
+        try {
+          await FirebaseFirestore.instance.collection('trips').doc(tripCode).set(
+            Map<String, dynamic>.from(widget.trip),
+            SetOptions(merge: true),
+          );
+        } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('Persistence note: $e');
+    }
+  }
+
   Widget _buildItinerarySection(List<Map<String, dynamic>> schedule) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final warnings = _getItineraryWarnings();
@@ -1813,6 +2879,12 @@ Plan crafted with NexTripia-AI Travel Companion!
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // -------------------------------------------------------------
+          // Dynamic Trip Replan Action Banner & Button (Above Daily Schedule)
+          // -------------------------------------------------------------
+          _buildReplanTripBanner(schedule),
+          const SizedBox(height: 18),
+
           Row(
             children: [
               Container(
@@ -1898,275 +2970,389 @@ Plan crafted with NexTripia-AI Travel Companion!
                 ),
               ),
             )
-          else
-            ...schedule.map((dayPlan) {
-              final dayNum = dayPlan['dayNumber'] as int;
-              final dayTitle = (dayPlan['title'] ?? 'Day $dayNum').toString();
-              final activities = dayPlan['activities'] as List<Map<String, String>>;
+          else ...[
+            // -------------------------------------------------------------
+            // Day Selector Tabs: Day 1, Day 2, Day 3... based on days chosen
+            // -------------------------------------------------------------
+            SizedBox(
+              height: 48,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                physics: const BouncingScrollPhysics(),
+                itemCount: schedule.length,
+                separatorBuilder: (context, index) => const SizedBox(width: 10),
+                itemBuilder: (context, index) {
+                  final isSelected = index == _selectedDayIndex;
+                  final dayNum = schedule[index]['dayNumber'] ?? (index + 1);
 
-              return Container(
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                  color: isDark ? const Color(0xFF1E293B) : Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9),
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.02),
-                      blurRadius: 8,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Day Title Bar
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  return InkWell(
+                    onTap: () {
+                      setState(() {
+                        _selectedDayIndex = index;
+                      });
+                    },
+                    borderRadius: BorderRadius.circular(16),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
                       decoration: BoxDecoration(
-                        color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
-                        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+                        gradient: isSelected
+                            ? const LinearGradient(
+                                colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              )
+                            : null,
+                        color: isSelected
+                            ? null
+                            : (isDark ? const Color(0xFF1E293B) : Colors.white),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: isSelected
+                              ? Colors.transparent
+                              : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                          width: 1.2,
+                        ),
+                        boxShadow: isSelected
+                            ? [
+                                BoxShadow(
+                                  color: const Color(0xFF6366F1).withValues(alpha: 0.35),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 3),
+                                ),
+                              ]
+                            : [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.03),
+                                  blurRadius: 4,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
                       ),
                       child: Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF6366F1),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              'Day $dayNum',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
+                          Icon(
+                            Icons.calendar_today_rounded,
+                            size: 14,
+                            color: isSelected
+                                ? Colors.white
+                                : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B)),
                           ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              dayTitle,
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF475569),
-                              ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Day $dayNum',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w800,
+                              color: isSelected
+                                  ? Colors.white
+                                  : (isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A)),
+                              letterSpacing: 0.2,
                             ),
                           ),
                         ],
                       ),
                     ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 16),
 
-                    // Activities Timeline
-                    Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        children: activities.asMap().entries.map((entry) {
-                          final idx = entry.key;
-                          final act = entry.value;
-                          final placeName = act['place']!;
-                          final isVisited = _visitedPlaces.contains(placeName);
-                          final isLast = idx == activities.length - 1;
-                          final stopType = act['stopType'] ?? 'VISIT';
-                          final activityDesc = act['activity'] ?? '';
-                          final address = act['address'] ?? '';
-                          final itemColor = _getCategoryColor(placeName, stopType);
-                          final itemIcon = _getCategoryIcon(placeName, stopType);
+            // -------------------------------------------------------------
+            // Render only the active chosen Day's optimized schedule
+            // -------------------------------------------------------------
+            Builder(
+              builder: (context) {
+                final activeIdx = _selectedDayIndex.clamp(0, schedule.length - 1);
+                final dayPlan = schedule[activeIdx];
+                final dayNum = dayPlan['dayNumber'] as int;
+                final dayTitle = (dayPlan['title'] ?? 'Day $dayNum').toString();
+                final activities = (dayPlan['activities'] as List<Map<String, String>>?) ?? [];
 
-                          return Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              // Timeline node
-                              Column(
-                                children: [
-                                  GestureDetector(
-                                    onTap: () {
-                                      setState(() {
-                                        if (isVisited) {
-                                          _visitedPlaces.remove(placeName);
-                                        } else {
-                                          _visitedPlaces.add(placeName);
-                                        }
-                                      });
-                                    },
-                                    child: Container(
-                                      width: 24,
-                                      height: 24,
-                                      decoration: BoxDecoration(
-                                        color: isVisited
-                                            ? const Color(0xFF059669)
-                                            : (isDark ? const Color(0xFF312E81) : const Color(0xFFEEF2FF)),
-                                        shape: BoxShape.circle,
-                                        border: Border.all(
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF1E293B) : Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.02),
+                        blurRadius: 8,
+                        offset: const Offset(0, 3),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Day Title Bar
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
+                          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF6366F1),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                'Day $dayNum',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                dayTitle,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                '${activities.length} Stops',
+                                style: const TextStyle(
+                                  color: Color(0xFF10B981),
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      // Activities Timeline
+                      Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                          children: activities.asMap().entries.map((entry) {
+                            final idx = entry.key;
+                            final act = entry.value;
+                            final placeName = act['place']!;
+                            final isVisited = _visitedPlaces.contains(placeName);
+                            final isLast = idx == activities.length - 1;
+                            final stopType = act['stopType'] ?? 'VISIT';
+                            final activityDesc = act['activity'] ?? '';
+                            final address = act['address'] ?? '';
+                            final itemColor = _getCategoryColor(placeName, stopType);
+                            final itemIcon = _getCategoryIcon(placeName, stopType);
+
+                            return Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // Timeline node
+                                Column(
+                                  children: [
+                                    GestureDetector(
+                                      onTap: () {
+                                        setState(() {
+                                          if (isVisited) {
+                                            _visitedPlaces.remove(placeName);
+                                          } else {
+                                            _visitedPlaces.add(placeName);
+                                          }
+                                        });
+                                      },
+                                      child: Container(
+                                        width: 24,
+                                        height: 24,
+                                        decoration: BoxDecoration(
                                           color: isVisited
                                               ? const Color(0xFF059669)
-                                              : itemColor,
-                                          width: 2,
+                                              : (isDark ? const Color(0xFF312E81) : const Color(0xFFEEF2FF)),
+                                          shape: BoxShape.circle,
+                                          border: Border.all(
+                                            color: isVisited
+                                                ? const Color(0xFF059669)
+                                                : itemColor,
+                                            width: 2,
+                                          ),
                                         ),
-                                      ),
-                                      child: Center(
-                                        child: Icon(
-                                          isVisited ? Icons.check : Icons.circle,
-                                          size: isVisited ? 14 : 8,
-                                          color: isVisited ? Colors.white : itemColor,
+                                        child: Center(
+                                          child: Icon(
+                                            isVisited ? Icons.check : Icons.circle,
+                                            size: isVisited ? 14 : 8,
+                                            color: isVisited ? Colors.white : itemColor,
+                                          ),
                                         ),
                                       ),
                                     ),
-                                  ),
-                                  if (!isLast)
-                                    Container(
-                                      width: 2,
-                                      height: activityDesc.isNotEmpty ? 80 : 64,
-                                      color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
-                                    ),
-                                ],
-                              ),
-                              const SizedBox(width: 14),
+                                    if (!isLast)
+                                      Container(
+                                        width: 2,
+                                        height: activityDesc.isNotEmpty ? 80 : 64,
+                                        color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                                      ),
+                                  ],
+                                ),
+                                const SizedBox(width: 14),
 
-                              // Activity Content Card
-                              Expanded(
-                                child: Container(
-                                  margin: const EdgeInsets.only(bottom: 12),
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: _selectedPlace == placeName
-                                        ? (isDark ? const Color(0xFF312E81).withValues(alpha: 0.4) : const Color(0xFFF5F3FF))
-                                        : (isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC)),
-                                    borderRadius: BorderRadius.circular(14),
-                                    border: Border.all(
+                                // Activity Content Card
+                                Expanded(
+                                  child: Container(
+                                    margin: const EdgeInsets.only(bottom: 12),
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
                                       color: _selectedPlace == placeName
-                                          ? const Color(0xFF6366F1)
-                                          : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
-                                    ),
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        children: [
-                                          Icon(
-                                            itemIcon,
-                                            size: 16,
-                                            color: itemColor,
-                                          ),
-                                          const SizedBox(width: 6),
-                                          Expanded(
-                                            child: Text(
-                                              placeName,
-                                              style: TextStyle(
-                                                fontSize: 15,
-                                                fontWeight: FontWeight.w800,
-                                                color: isVisited
-                                                    ? Colors.grey
-                                                    : (isDark ? Colors.white : const Color(0xFF1E1B4B)),
-                                                decoration: isVisited
-                                                    ? TextDecoration.lineThrough
-                                                    : null,
-                                              ),
-                                            ),
-                                          ),
-                                          IconButton(
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(),
-                                            icon: const Icon(
-                                              Icons.location_searching_rounded,
-                                              size: 18,
-                                              color: Color(0xFF6366F1),
-                                            ),
-                                            tooltip: 'Locate on Map',
-                                            onPressed: () => _focusOnPlace(placeName),
-                                          ),
-                                        ],
+                                          ? (isDark ? const Color(0xFF312E81).withValues(alpha: 0.4) : const Color(0xFFF5F3FF))
+                                          : (isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC)),
+                                      borderRadius: BorderRadius.circular(14),
+                                      border: Border.all(
+                                        color: _selectedPlace == placeName
+                                            ? const Color(0xFF6366F1)
+                                            : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
                                       ),
-                                      if (activityDesc.isNotEmpty && activityDesc != placeName) ...[
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          activityDesc,
-                                          style: TextStyle(
-                                            fontSize: 12.5,
-                                            color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569),
-                                            height: 1.3,
-                                          ),
-                                        ),
-                                      ],
-                                      if (address.isNotEmpty) ...[
-                                        const SizedBox(height: 4),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
                                         Row(
                                           children: [
                                             Icon(
-                                              Icons.location_on_outlined,
-                                              size: 12,
-                                              color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+                                              itemIcon,
+                                              size: 16,
+                                              color: itemColor,
                                             ),
-                                            const SizedBox(width: 4),
+                                            const SizedBox(width: 6),
                                             Expanded(
                                               child: Text(
-                                                address,
+                                                placeName,
                                                 style: TextStyle(
-                                                  fontSize: 11,
-                                                  color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+                                                  fontSize: 15,
+                                                  fontWeight: FontWeight.w800,
+                                                  color: isVisited
+                                                      ? Colors.grey
+                                                      : (isDark ? Colors.white : const Color(0xFF1E1B4B)),
+                                                  decoration: isVisited
+                                                      ? TextDecoration.lineThrough
+                                                      : null,
                                                 ),
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                            IconButton(
+                                              padding: EdgeInsets.zero,
+                                              constraints: const BoxConstraints(),
+                                              icon: const Icon(
+                                                Icons.location_searching_rounded,
+                                                size: 18,
+                                                color: Color(0xFF6366F1),
+                                              ),
+                                              tooltip: 'Locate on Map',
+                                              onPressed: () => _focusOnPlace(placeName),
+                                            ),
+                                          ],
+                                        ),
+                                        if (activityDesc.isNotEmpty && activityDesc != placeName) ...[
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            activityDesc,
+                                            style: TextStyle(
+                                              fontSize: 12.5,
+                                              color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569),
+                                              height: 1.3,
+                                            ),
+                                          ),
+                                        ],
+                                        if (address.isNotEmpty) ...[
+                                          const SizedBox(height: 4),
+                                          Row(
+                                            children: [
+                                              Icon(
+                                                Icons.location_on_outlined,
+                                                size: 12,
+                                                color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+                                              ),
+                                              const SizedBox(width: 4),
+                                              Expanded(
+                                                child: Text(
+                                                  address,
+                                                  style: TextStyle(
+                                                    fontSize: 11,
+                                                    color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+                                                  ),
+                                                  maxLines: 1,
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                        const SizedBox(height: 6),
+                                        Wrap(
+                                          alignment: WrapAlignment.spaceBetween,
+                                          crossAxisAlignment: WrapCrossAlignment.center,
+                                          spacing: 8,
+                                          runSpacing: 4,
+                                          children: [
+                                            Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Icon(
+                                                  Icons.access_time_rounded,
+                                                  size: 13,
+                                                  color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                                ),
+                                                const SizedBox(width: 4),
+                                                Text(
+                                                  act['time']!,
+                                                  style: TextStyle(
+                                                    fontSize: 12,
+                                                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                                    fontWeight: FontWeight.w500,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            Text(
+                                              act['period']!,
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w700,
+                                                color: itemColor,
                                               ),
                                             ),
                                           ],
                                         ),
                                       ],
-                                      const SizedBox(height: 6),
-                                      Wrap(
-                                        alignment: WrapAlignment.spaceBetween,
-                                        crossAxisAlignment: WrapCrossAlignment.center,
-                                        spacing: 8,
-                                        runSpacing: 4,
-                                        children: [
-                                          Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              Icon(
-                                                Icons.access_time_rounded,
-                                                size: 13,
-                                                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                                              ),
-                                              const SizedBox(width: 4),
-                                              Text(
-                                                act['time']!,
-                                                style: TextStyle(
-                                                  fontSize: 12,
-                                                  color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                          Text(
-                                            act['period']!,
-                                            style: TextStyle(
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.w700,
-                                              color: itemColor,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
+                                    ),
                                   ),
                                 ),
-                              ),
-                            ],
-                          );
-                        }).toList(),
+                              ],
+                            );
+                          }).toList(),
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-              );
-            }),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ],
         ],
       ),
     );

@@ -283,3 +283,82 @@ class ItineraryPlan {
 
   Map<String, dynamic> toJson() => rawJson;
 }
+
+class ReplanSuggestion {
+  final String name;
+  final String placeId;
+  final double lat;
+  final double lng;
+  final double distanceKm;
+  final int travelFromCurrentMinutes;
+  final int visitDurationMinutes;
+  final int travelToNextMinutes;
+  final int totalTimeMinutes;
+  final String timeStatus; // 'fits', 'tight', 'clash'
+  final String timeStatusBadge;
+  final String suggestedSlot;
+  final String category;
+  final double rating;
+  final String summary;
+  final String? address;
+
+  ReplanSuggestion({
+    required this.name,
+    required this.placeId,
+    required this.lat,
+    required this.lng,
+    required this.distanceKm,
+    required this.travelFromCurrentMinutes,
+    required this.visitDurationMinutes,
+    required this.travelToNextMinutes,
+    required this.totalTimeMinutes,
+    required this.timeStatus,
+    required this.timeStatusBadge,
+    required this.suggestedSlot,
+    required this.category,
+    required this.rating,
+    required this.summary,
+    this.address,
+  });
+
+  factory ReplanSuggestion.fromJson(Map<String, dynamic> json) {
+    return ReplanSuggestion(
+      name: json['name']?.toString() ?? 'Nearby Spot',
+      placeId: json['place_id']?.toString() ?? '',
+      lat: (json['lat'] as num?)?.toDouble() ?? 0.0,
+      lng: (json['lng'] as num?)?.toDouble() ?? 0.0,
+      distanceKm: (json['distance_km'] as num?)?.toDouble() ?? 0.0,
+      travelFromCurrentMinutes: (json['travel_from_current_min'] as num?)?.toInt() ?? 10,
+      visitDurationMinutes: (json['visit_duration_min'] as num?)?.toInt() ?? 40,
+      travelToNextMinutes: (json['travel_to_next_min'] as num?)?.toInt() ?? 15,
+      totalTimeMinutes: (json['total_time_min'] as num?)?.toInt() ?? 65,
+      timeStatus: json['time_status']?.toString() ?? 'fits',
+      timeStatusBadge: json['time_status_badge']?.toString() ?? 'No Time Clash',
+      suggestedSlot: json['suggested_slot']?.toString() ?? 'Flexible Slot',
+      category: json['category']?.toString() ?? 'Sightseeing',
+      rating: (json['rating'] as num?)?.toDouble() ?? 4.5,
+      summary: json['summary']?.toString() ?? '',
+      address: json['address']?.toString(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'place_id': placeId,
+    'lat': lat,
+    'lng': lng,
+    'distance_km': distanceKm,
+    'travel_from_current_min': travelFromCurrentMinutes,
+    'visit_duration_min': visitDurationMinutes,
+    'travel_to_next_min': travelToNextMinutes,
+    'total_time_min': totalTimeMinutes,
+    'time_status': timeStatus,
+    'time_status_badge': timeStatusBadge,
+    'suggested_slot': suggestedSlot,
+    'category': category,
+    'rating': rating,
+    'summary': summary,
+    'address': address,
+  };
+}
+

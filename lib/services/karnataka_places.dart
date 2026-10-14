@@ -2445,6 +2445,9 @@ class KarnatakaPlacesRegistry {
     ],
   };
 
+  /// Map of curated tourist attractions grouped by regional hub
+  static Map<String, List<PlaceCard>> get curatedAttractionsByRegion => _curatedAttractionsByRegion;
+
   /// Returns curated tourist attractions for a destination/region
   static List<PlaceCard> getCuratedAttractions(String destination) {
     final clean = destination.trim().isNotEmpty ? destination.trim() : 'Karnataka';

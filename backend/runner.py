@@ -25,8 +25,10 @@ from google.genai import types
 
 from agents import (
     planner_agent,
+    replan_agent,
     deterministic_categorize_places,
     build_daily_schedules_programmatic,
+    suggest_replan_candidates,
 )
 from tools import find_places, get_place_details, compute_route
 
@@ -185,3 +187,84 @@ async def run_plan_async(
     itinerary_result["end_point"] = end_point
 
     return itinerary_result
+
+
+async def run_replan_suggest_async(
+    user_id: str,
+    trip_id: str,
+    current_place: str,
+    current_lat: float,
+    current_lng: float,
+    next_place: Optional[str] = None,
+    next_lat: Optional[float] = None,
+    next_lng: Optional[float] = None,
+    current_time_str: str = "11:00 AM",
+    next_time_str: str = "02:00 PM",
+    available_minutes: int = 120,
+    city_or_region: str = "Karnataka",
+    existing_places: Optional[List[str]] = None,
+    max_radius_km: float = 15.0,
+    pool_places: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """ADK runner function: finds candidate places near `current_place` within `max_radius_km`,
+    checks travel time & duration, and evaluates potential time clashes with `next_place`.
+    """
+    existing = list(existing_places or [])
+    candidates_pool: List[Dict[str, Any]] = []
+
+    # 1. Include already known places from the trip pool
+    if pool_places:
+        candidates_pool.extend(pool_places)
+
+    # 2. Search places nearby current location within radius_km
+    loop = asyncio.get_event_loop()
+    try:
+        nearby_fetched = await loop.run_in_executor(
+            None,
+            find_places,
+            city_or_region or current_place,
+            current_lat,
+            current_lng,
+            max_radius_km,
+        )
+        if nearby_fetched:
+            candidates_pool.extend(nearby_fetched)
+    except Exception as e:
+        logger.warning(f"Error fetching nearby places for replan: {e}")
+
+    # Deduplicate candidate places by name/place_id
+    deduped: Dict[str, Dict[str, Any]] = {}
+    for p in candidates_pool:
+        key = p.get("place_id") or p.get("name")
+        if key and key not in deduped:
+            deduped[key] = p
+    candidate_list = list(deduped.values())
+
+    # 3. Analyze time management and clashes
+    suggestions = await loop.run_in_executor(
+        None,
+        lambda: suggest_replan_candidates(
+            current_place=current_place,
+            current_lat=current_lat,
+            current_lng=current_lng,
+            next_place=next_place,
+            next_lat=next_lat,
+            next_lng=next_lng,
+            current_time_str=current_time_str,
+            next_time_str=next_time_str,
+            available_minutes=available_minutes,
+            candidate_places=candidate_list,
+            existing_places=existing,
+            max_radius_km=max_radius_km,
+        ),
+    )
+
+    return {
+        "trip_id": trip_id,
+        "current_place": current_place,
+        "next_place": next_place or "Next Scheduled Stop",
+        "available_minutes": available_minutes,
+        "total_suggestions": len(suggestions),
+        "suggestions": suggestions,
+    }
+

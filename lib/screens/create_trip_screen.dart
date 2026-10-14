@@ -3294,6 +3294,24 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       trip: previewTrip,
       isEmbedded: true,
       scrollController: _scrollController,
+      onTripUpdated: (updatedTrip) {
+        setState(() {
+          if (updatedTrip['places'] is List) {
+            final newPlaces = List<String>.from(updatedTrip['places']);
+            for (var p in newPlaces) {
+              if (!_selectedPlaces.contains(p) && !_groupPlaces.contains(p)) {
+                _selectedPlaces.add(p);
+              }
+            }
+          }
+          if (updatedTrip['itineraryPlan'] != null) {
+            try {
+              final planMap = Map<String, dynamic>.from(updatedTrip['itineraryPlan'] as Map);
+              _itineraryPlan = ItineraryPlan.fromJson(planMap);
+            } catch (_) {}
+          }
+        });
+      },
     );
   }
 
