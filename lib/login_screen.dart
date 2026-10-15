@@ -385,15 +385,16 @@ class _LoginScreenState extends State<LoginScreen> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Transform.rotate(
-                          angle: -0.4,
-                          child: const Icon(
-                            Icons.send_rounded,
-                            color: Color(0xFF6366F1),
-                            size: 24,
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.asset(
+                            'assets/images/app_icon.png',
+                            width: 32,
+                            height: 32,
+                            fit: BoxFit.contain,
                           ),
                         ),
-                        const SizedBox(width: 8),
+                        const SizedBox(width: 10),
                         const Text(
                           'NextTripia AI',
                           style: TextStyle(
