@@ -151,6 +151,17 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   int _approvedMemberCount = 1;
   final Set<String> _pendingRequestIdsHandled = {};
   bool _isShowingApprovalDialog = false;
+  bool _hasSavedTrip = false;
+
+  Future<void> _handleExitWithoutSaving() async {
+    if (!_hasSavedTrip && _isHost) {
+      try {
+        await FirebaseFirestore.instance.collection('trips').doc(_tripCode).delete();
+      } catch (e) {
+        debugPrint('Notice deleting unsaved trip draft: $e');
+      }
+    }
+  }
 
   @override
   void initState() {
@@ -192,6 +203,11 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         dest = dest[0].toUpperCase() + dest.substring(1);
       }
       _destinationController.text = dest;
+      final cityCoord = KarnatakaPlacesRegistry.resolvePlace(dest);
+      if (cityCoord != null) {
+        _selectedCityLat = cityCoord.lat;
+        _selectedCityLng = cityCoord.lng;
+      }
       _fetchPlacesViaBackend(_destinationController.text);
     }
     if (data['tripName'] != null) {
@@ -298,6 +314,8 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         'travelMode': _travelMode,
         'cityPlaceId': _selectedCityPlaceId,
         'itineraryPlan': _itineraryPlan?.toJson(),
+        'isSaved': _hasSavedTrip,
+        'status': _hasSavedTrip ? 'completed' : 'draft',
         'userEmail': user?.email?.trim().toLowerCase() ?? '',
         'creatorEmail': user?.email?.trim().toLowerCase() ?? '',
         'updatedAt': FieldValue.serverTimestamp(),
@@ -655,6 +673,13 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
   @override
   void dispose() {
+    if (!_hasSavedTrip && _isHost) {
+      FirebaseFirestore.instance
+          .collection('trips')
+          .doc(_tripCode)
+          .delete()
+          .catchError((_) {});
+    }
     _tripSubscription?.cancel();
     _cityDebounce?.cancel();
     _startPointDebounce?.cancel();
@@ -3672,6 +3697,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
 
   Future<void> _saveTrip() async {
+    _hasSavedTrip = true;
     final prefs = await SharedPreferences.getInstance();
     final user = FirebaseAuth.instance.currentUser;
     final userEmail = user?.email?.trim().toLowerCase() ??
@@ -3731,6 +3757,8 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       'placeCoordinates': placeCoordinatesMap,
       'memberCount': _approvedMemberCount,
       'isHost': _isHost,
+      'isSaved': true,
+      'status': 'completed',
       'hostUid': FirebaseAuth.instance.currentUser?.uid,
       'userEmail': userEmail,
       'creatorEmail': userEmail,
@@ -3785,6 +3813,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         'places': allCombinedPlaces,
         'placeCoordinates': placeCoordinatesMap,
         'memberCount': _approvedMemberCount,
+        'isSaved': true,
         'status': 'completed',
         'hostUid': FirebaseAuth.instance.currentUser?.uid,
         'userEmail': userEmail,
@@ -3851,30 +3880,50 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     final int maxSteps = _isHost ? 5 : 4;
     final bool isLastStep = _currentStep == maxSteps;
 
-    return Scaffold(
-      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
-      appBar: AppBar(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        if (_currentStep > 1) {
+          setState(() {
+            _currentStep--;
+          });
+          if (_scrollController.hasClients) {
+            _scrollController.jumpTo(0);
+          }
+        } else {
+          await _handleExitWithoutSaving();
+          if (context.mounted) {
+            Navigator.pop(context);
+          }
+        }
+      },
+      child: Scaffold(
         backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
-        elevation: 0,
-        leading: IconButton(
-          icon: Icon(
-            Icons.arrow_back_ios_new_rounded,
-            color: isDark ? Colors.white : const Color(0xFF0F172A),
-            size: 20,
-          ),
-          onPressed: () {
-            if (_currentStep > 1) {
-              setState(() {
-                _currentStep--;
-              });
-              if (_scrollController.hasClients) {
-                _scrollController.jumpTo(0);
+        appBar: AppBar(
+          backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+          elevation: 0,
+          leading: IconButton(
+            icon: Icon(
+              Icons.arrow_back_ios_new_rounded,
+              color: isDark ? Colors.white : const Color(0xFF0F172A),
+              size: 20,
+            ),
+            onPressed: () async {
+              if (_currentStep > 1) {
+                setState(() {
+                  _currentStep--;
+                });
+                if (_scrollController.hasClients) {
+                  _scrollController.jumpTo(0);
+                }
+              } else {
+                await _handleExitWithoutSaving();
+                if (!context.mounted) return;
+                Navigator.pop(context);
               }
-            } else {
-              Navigator.pop(context);
-            }
-          },
-        ),
+            },
+          ),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
@@ -4066,8 +4115,9 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           ],
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 }
 
 class TripQrModalDialog extends StatefulWidget {

@@ -23,6 +23,58 @@ class _TripsScreenState extends State<TripsScreen> {
     _loadTrips();
   }
 
+  bool _isValidSavedTrip(Map<String, dynamic> trip) {
+    if (trip.isEmpty) return false;
+
+    // 1. If explicitly marked as not saved or draft
+    if (trip['isSaved'] == false || trip['status'] == 'draft') {
+      return false;
+    }
+
+    // 2. Destination must be non-empty and valid
+    final destination = (trip['destination'] ?? '').toString().trim();
+    if (destination.isEmpty || destination.toLowerCase() == 'unknown destination') {
+      return false;
+    }
+
+    // 3. If status is present, it must be 'completed'
+    if (trip.containsKey('status') && trip['status'] != 'completed') {
+      return false;
+    }
+
+    // 4. Must have actual places or itinerary plan
+    final places = trip['places'];
+    final bool hasPlaces = (places is List && places.isNotEmpty) ||
+        (places is String &&
+            places.trim().isNotEmpty &&
+            places.trim() != 'No places selected' &&
+            places.trim() != '[]');
+
+    final bool hasPlan = (trip['itineraryPlan'] != null &&
+            trip['itineraryPlan'] is Map &&
+            (trip['itineraryPlan'] as Map).isNotEmpty) ||
+        (trip['initialPlan'] != null &&
+            trip['initialPlan'] is Map &&
+            (trip['initialPlan'] as Map).isNotEmpty) ||
+        (trip['replannedPlan'] != null &&
+            trip['replannedPlan'] is Map &&
+            (trip['replannedPlan'] as Map).isNotEmpty) ||
+        (trip['schedule'] != null);
+
+    // If it has neither places nor plan, it's not a saved trip
+    if (!hasPlaces && !hasPlan) {
+      return false;
+    }
+
+    // A saved trip must have a startDate or an itinerary plan
+    final startDate = (trip['startDate'] ?? '').toString().trim();
+    if (startDate.isEmpty && !hasPlan) {
+      return false;
+    }
+
+    return true;
+  }
+
   Future<void> _loadTrips() async {
     final prefs = await SharedPreferences.getInstance();
     final user = FirebaseAuth.instance.currentUser;
@@ -40,7 +92,7 @@ class _TripsScreenState extends State<TripsScreen> {
         try {
           final decoded = jsonDecode(t) as Map<String, dynamic>;
           final tripEmail = (decoded['userEmail'] ?? decoded['creatorEmail'] ?? '').toString().trim().toLowerCase();
-          if (tripEmail == userEmail) {
+          if (tripEmail == userEmail && _isValidSavedTrip(decoded)) {
             matching.add(t);
           }
         } catch (_) {}
@@ -61,7 +113,7 @@ class _TripsScreenState extends State<TripsScreen> {
               return <String, dynamic>{};
             }
           })
-          .where((trip) => trip.isNotEmpty)
+          .where((trip) => trip.isNotEmpty && _isValidSavedTrip(trip))
           .where((trip) {
             // If user has been removed by the host, the plan must no longer be visible!
             final List removedEmails = (trip['removedEmails'] as List?) ?? [];
@@ -82,6 +134,12 @@ class _TripsScreenState extends State<TripsScreen> {
           .toList();
     });
 
+    // Clean up local storage if incomplete / draft entries were present
+    final cleanLocalTrips = _savedTrips.map((e) => jsonEncode(e)).toList();
+    if (cleanLocalTrips.length != savedTrips.length) {
+      await prefs.setStringList(key, cleanLocalTrips);
+    }
+
     // Cloud Firestore Sync: Fetch user trips and merge
     if (userEmail.isNotEmpty) {
       try {
@@ -94,6 +152,23 @@ class _TripsScreenState extends State<TripsScreen> {
         for (final doc in querySnapshot.docs) {
           final data = doc.data();
           final tripCode = (data['tripCode'] ?? doc.id).toString();
+
+          // Only finalized/saved trips should be visible
+          if (!_isValidSavedTrip(data)) {
+            final existingIdx = _savedTrips.indexWhere((t) => t['tripCode']?.toString() == tripCode);
+            if (existingIdx != -1) {
+              _savedTrips.removeAt(existingIdx);
+              hadUpdates = true;
+            }
+            final tripCreator = (data['userEmail'] ?? data['creatorEmail'] ?? '').toString().trim().toLowerCase();
+            if (tripCreator == userEmail) {
+              try {
+                await doc.reference.delete();
+              } catch (_) {}
+            }
+            continue;
+          }
+
           final List removedEmails = (data['removedEmails'] as List?) ?? [];
           final List removedUids = (data['removedUids'] as List?) ?? [];
           final myUid = user?.uid ?? '';
@@ -136,6 +211,16 @@ class _TripsScreenState extends State<TripsScreen> {
           for (final doc in participantSnapshot.docs) {
             final data = doc.data();
             final tripCode = (data['tripCode'] ?? doc.id).toString();
+
+            if (!_isValidSavedTrip(data)) {
+              final existingIdx = _savedTrips.indexWhere((t) => t['tripCode']?.toString() == tripCode);
+              if (existingIdx != -1) {
+                _savedTrips.removeAt(existingIdx);
+                hadUpdates = true;
+              }
+              continue;
+            }
+
             final List removedEmails = (data['removedEmails'] as List?) ?? [];
             final List removedUids = (data['removedUids'] as List?) ?? [];
             final myUid = user.uid;

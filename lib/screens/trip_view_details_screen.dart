@@ -18,10 +18,9 @@ class TripViewDetailsScreen extends StatefulWidget {
   State<TripViewDetailsScreen> createState() => _TripViewDetailsScreenState();
 }
 
-class _TripViewDetailsScreenState extends State<TripViewDetailsScreen> with SingleTickerProviderStateMixin {
+class _TripViewDetailsScreenState extends State<TripViewDetailsScreen> {
   late Map<String, dynamic> _trip;
   late String _tripCode;
-  TabController? _planTabController;
   bool _isRemovingMember = false;
 
   @override
@@ -29,12 +28,10 @@ class _TripViewDetailsScreenState extends State<TripViewDetailsScreen> with Sing
     super.initState();
     _trip = Map<String, dynamic>.from(widget.trip);
     _tripCode = (_trip['tripCode'] ?? _trip['id'] ?? '').toString();
-    _planTabController = TabController(length: 2, vsync: this);
   }
 
   @override
   void dispose() {
-    _planTabController?.dispose();
     super.dispose();
   }
 
@@ -265,10 +262,14 @@ class _TripViewDetailsScreenState extends State<TripViewDetailsScreen> with Sing
           final membersList = memberMapByEmail.values.toList();
           final int memberCount = membersList.isNotEmpty ? membersList.length : int.tryParse(groupSize) ?? 1;
 
-          // Schedules: Initial vs Replanned
-          final initialSchedule = _getScheduleList(activeTripData['initialPlan'] ?? activeTripData['itineraryPlan']);
-          final replannedSchedule = _getScheduleList(activeTripData['replannedPlan']);
-          final bool hasReplan = replannedSchedule.isNotEmpty || (activeTripData['hasReplan'] == true);
+          // Schedules: Replan Details
+          final replannedSchedule = _getScheduleList(
+            activeTripData['replannedPlan'] ??
+            activeTripData['schedule'] ??
+            activeTripData['itineraryPlan'] ??
+            activeTripData['initialPlan'],
+          );
+          final bool hasReplan = (activeTripData['hasReplan'] == true) || (activeTripData['replannedPlan'] != null);
 
           return SingleChildScrollView(
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
@@ -563,13 +564,15 @@ class _TripViewDetailsScreenState extends State<TripViewDetailsScreen> with Sing
                   ),
                   child: placesList.isEmpty
                       ? Text('No places added yet.', style: TextStyle(color: subtextColor, fontSize: 13))
-                      : Wrap(
-                          spacing: 8,
-                          runSpacing: 10,
-                          children: List.generate(placesList.length, (idx) {
+                      : ListView.separated(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          itemCount: placesList.length,
+                          separatorBuilder: (context, idx) => const SizedBox(height: 8),
+                          itemBuilder: (context, idx) {
                             final place = placesList[idx];
                             return Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                               decoration: BoxDecoration(
                                 color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
                                 borderRadius: BorderRadius.circular(10),
@@ -578,11 +581,10 @@ class _TripViewDetailsScreenState extends State<TripViewDetailsScreen> with Sing
                                 ),
                               ),
                               child: Row(
-                                mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Container(
-                                    width: 20,
-                                    height: 20,
+                                    width: 22,
+                                    height: 22,
                                     alignment: Alignment.center,
                                     decoration: BoxDecoration(
                                       color: primaryColor.withValues(alpha: 0.15),
@@ -592,38 +594,40 @@ class _TripViewDetailsScreenState extends State<TripViewDetailsScreen> with Sing
                                       '${idx + 1}',
                                       style: TextStyle(
                                         color: primaryColor,
-                                        fontSize: 11,
+                                        fontSize: 11.5,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
                                   ),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    place,
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                      color: textColor,
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(
+                                      place,
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                        color: textColor,
+                                      ),
                                     ),
                                   ),
                                 ],
                               ),
                             );
-                          }),
+                          },
                         ),
                 ),
                 const SizedBox(height: 24),
 
-                // 4. INITIAL PLAN & REPLAN DETAILS SECTION
+                // 4. REPLAN DETAILS SECTION
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Row(
                       children: [
-                        Icon(Icons.route_rounded, color: const Color(0xFFF59E0B), size: 20),
+                        const Icon(Icons.published_with_changes_rounded, color: Color(0xFF8B5CF6), size: 20),
                         const SizedBox(width: 8),
                         Text(
-                          'Trip Plan Schedule',
+                          'Replan Details',
                           style: TextStyle(
                             fontSize: 16.5,
                             fontWeight: FontWeight.w800,
@@ -653,89 +657,12 @@ class _TripViewDetailsScreenState extends State<TripViewDetailsScreen> with Sing
                 ),
                 const SizedBox(height: 12),
 
-                // Tab Switcher between Initial Plan and Replan Details
-                Container(
-                  height: 42,
-                  decoration: BoxDecoration(
-                    color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: borderColor),
-                  ),
-                  child: TabBar(
-                    controller: _planTabController,
-                    indicator: BoxDecoration(
-                      color: primaryColor,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    labelColor: Colors.white,
-                    unselectedLabelColor: subtextColor,
-                    labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                    tabs: const [
-                      Tab(text: 'Initial Plan'),
-                      Tab(text: 'Replan Details'),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 14),
-
-                // Tab View
-                SizedBox(
-                  height: 400,
-                  child: TabBarView(
-                    controller: _planTabController,
-                    children: [
-                      // TAB 1: INITIAL PLAN
-                      _buildScheduleView(
-                        schedule: initialSchedule,
-                        isDark: isDark,
-                        emptyMessage: 'No initial schedule activities found.',
-                        isReplanned: false,
-                      ),
-
-                      // TAB 2: REPLAN DETAILS
-                      hasReplan
-                          ? _buildScheduleView(
-                              schedule: replannedSchedule.isNotEmpty ? replannedSchedule : initialSchedule,
-                              isDark: isDark,
-                              emptyMessage: 'No replan details recorded.',
-                              isReplanned: true,
-                            )
-                          : Container(
-                              padding: const EdgeInsets.all(24),
-                              decoration: BoxDecoration(
-                                color: cardBg,
-                                borderRadius: BorderRadius.circular(16),
-                                border: Border.all(color: borderColor),
-                              ),
-                              child: Center(
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Icons.published_with_changes_rounded, size: 44, color: subtextColor.withValues(alpha: 0.5)),
-                                    const SizedBox(height: 12),
-                                    Text(
-                                      'No Replan Applied',
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold,
-                                        color: textColor,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 6),
-                                    Text(
-                                      'This trip is currently running on its original schedule.\nWhen you replan on the map, updated timing and detours will appear here.',
-                                      textAlign: TextAlign.center,
-                                      style: TextStyle(
-                                        fontSize: 12.5,
-                                        color: subtextColor,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                    ],
-                  ),
+                // REPLAN DETAILS SCHEDULE VIEW
+                _buildScheduleView(
+                  schedule: replannedSchedule,
+                  isDark: isDark,
+                  emptyMessage: 'No replan details recorded yet.',
+                  isReplanned: hasReplan,
                 ),
                 const SizedBox(height: 30),
               ],
@@ -820,11 +747,15 @@ class _TripViewDetailsScreenState extends State<TripViewDetailsScreen> with Sing
     }
 
     return ListView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
       itemCount: schedule.length,
       itemBuilder: (context, dIdx) {
         final day = schedule[dIdx];
-        final dayTitle = (day['dayTitle'] ?? 'Day ${dIdx + 1}').toString();
-        final rawActs = (day['activities'] as List?) ?? [];
+        final dayNum = day['dayNumber'] ?? day['day_number'] ?? (dIdx + 1);
+        final dayDate = (day['date'] ?? '').toString();
+        final dayTitle = (day['dayTitle'] ?? day['title'] ?? (dayDate.isNotEmpty ? 'Day $dayNum • $dayDate' : 'Day $dayNum')).toString();
+        final rawActs = (day['activities'] as List?) ?? (day['stops'] as List?) ?? [];
         final activities = rawActs.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
 
         return Container(
@@ -841,7 +772,7 @@ class _TripViewDetailsScreenState extends State<TripViewDetailsScreen> with Sing
               radius: 14,
               backgroundColor: const Color(0xFF6366F1).withValues(alpha: 0.15),
               child: Text(
-                '${dIdx + 1}',
+                '$dayNum',
                 style: const TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.bold,
@@ -875,9 +806,9 @@ class _TripViewDetailsScreenState extends State<TripViewDetailsScreen> with Sing
                   separatorBuilder: (ctx, idx) => Divider(height: 1, color: borderColor),
                   itemBuilder: (ctx, actIdx) {
                     final act = activities[actIdx];
-                    final place = (act['place'] ?? 'Activity').toString();
+                    final place = (act['place'] ?? act['name'] ?? 'Activity').toString();
                     final time = (act['time'] ?? '').toString();
-                    final description = (act['activity'] ?? act['description'] ?? '').toString();
+                    final description = (act['activity'] ?? act['notes'] ?? act['description'] ?? act['activity_type'] ?? '').toString();
 
                     return Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),

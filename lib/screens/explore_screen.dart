@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/destination.dart';
+import 'create_trip_screen.dart';
 
 class ExploreScreen extends StatefulWidget {
   const ExploreScreen({super.key});
@@ -244,8 +245,15 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   ),
                   onPressed: () {
                     Navigator.pop(ctx);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Added ${destination.name} to itinerary planning!')),
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => CreateTripScreen(
+                          initialTripData: {
+                            'destination': destination.name,
+                          },
+                        ),
+                      ),
                     );
                   },
                 ),
