@@ -2756,6 +2756,11 @@ Plan crafted with NexTripia-AI Travel Companion!
     });
 
     // 3. Update widget.trip
+    if (widget.trip['initialPlan'] == null && _previousSchedule != null) {
+      widget.trip['initialPlan'] = jsonDecode(jsonEncode(_previousSchedule));
+    }
+    widget.trip['hasReplan'] = true;
+    widget.trip['replannedPlan'] = updatedSchedule;
     widget.trip['places'] = _allPlaces;
     final Map<String, dynamic> coordMap = {};
     _placeCoordinates.forEach((k, v) {

@@ -1,12 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:image/image.dart' as img;
 import 'trip_details_screen.dart';
 import '../trip_qr_screen.dart';
 import '../services/trip_api.dart';
@@ -46,12 +53,14 @@ class CreateTripScreen extends StatefulWidget {
   final bool isHost;
   final String? tripCode;
   final Map<String, dynamic>? initialTripData;
+  final int? initialStep;
 
   const CreateTripScreen({
     super.key,
     this.isHost = true,
     this.tripCode,
     this.initialTripData,
+    this.initialStep,
   });
 
   @override
@@ -147,6 +156,14 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   void initState() {
     super.initState();
     _isHost = widget.isHost;
+    if (widget.initialStep != null) {
+      _currentStep = widget.initialStep!;
+    } else if (!_isHost) {
+      _currentStep = 3; // Automatically start participants in planning room
+    }
+    if (!_isHost) {
+      _maxStepReached = 4;
+    }
     _tripCode = widget.tripCode ??
         'TRIP-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
 
@@ -1477,7 +1494,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     }
 
     // Must validate step 1 if moving past it
-    if (!_validateStep1(showWarning: true)) {
+    if (_isHost && !_validateStep1(showWarning: true)) {
       if (_scrollController.hasClients) {
         _scrollController.jumpTo(0);
       }
@@ -1485,7 +1502,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     }
 
     // Must validate step 2 if moving past it
-    if (targetStep > 2 && !_validateStepDates(showWarning: true)) {
+    if (_isHost && targetStep > 2 && !_validateStepDates(showWarning: true)) {
       if (_scrollController.hasClients) {
         _scrollController.jumpTo(0);
       }
@@ -2262,26 +2279,47 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       children: [
         if (!_isHost) ...[
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             decoration: BoxDecoration(
               color: const Color(0xFF6366F1).withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(14),
               border: Border.all(
                 color: const Color(0xFF6366F1).withValues(alpha: 0.3),
               ),
             ),
-            child: const Row(
+            child: Row(
               children: [
-                Icon(Icons.info_outline_rounded, color: Color(0xFF6366F1), size: 18),
-                SizedBox(width: 8),
-                Expanded(
+                const Icon(Icons.info_outline_rounded, color: Color(0xFF6366F1), size: 20),
+                const SizedBox(width: 10),
+                const Expanded(
                   child: Text(
-                    'You joined as participant. Destination is managed by host.',
+                    'You joined as participant. Destination and dates are set by host.',
                     style: TextStyle(
                       fontSize: 12,
                       color: Color(0xFF6366F1),
                       fontWeight: FontWeight.w600,
                     ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      _currentStep = 3;
+                    });
+                    if (_scrollController.hasClients) {
+                      _scrollController.jumpTo(0);
+                    }
+                  },
+                  icon: const Icon(Icons.arrow_forward_rounded, size: 14),
+                  label: const Text('Planning Room', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF6366F1),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   ),
                 ),
               ],
@@ -3688,10 +3726,12 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       'hotelLng': _hotelLng,
       'travelMode': _travelMode,
       'itineraryPlan': _itineraryPlan?.toJson(),
+      'initialPlan': _itineraryPlan?.toJson(),
       'places': allCombinedPlaces,
       'placeCoordinates': placeCoordinatesMap,
       'memberCount': _approvedMemberCount,
       'isHost': _isHost,
+      'hostUid': FirebaseAuth.instance.currentUser?.uid,
       'userEmail': userEmail,
       'creatorEmail': userEmail,
     };
@@ -3741,10 +3781,12 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         'hotelLng': _hotelLng,
         'travelMode': _travelMode,
         'itineraryPlan': _itineraryPlan?.toJson(),
+        'initialPlan': _itineraryPlan?.toJson(),
         'places': allCombinedPlaces,
         'placeCoordinates': placeCoordinatesMap,
         'memberCount': _approvedMemberCount,
         'status': 'completed',
+        'hostUid': FirebaseAuth.instance.currentUser?.uid,
         'userEmail': userEmail,
         'creatorEmail': userEmail,
         'updatedAt': FieldValue.serverTimestamp(),
@@ -3785,6 +3827,22 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         ),
       );
     }
+  }
+
+  void _showTripQrModal(BuildContext context, bool isDark) {
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogCtx) => TripQrModalDialog(
+        tripCode: _tripCode,
+        tripName: _tripNameController.text.trim().isNotEmpty
+            ? _tripNameController.text.trim()
+            : (_destinationController.text.trim().isNotEmpty
+                ? '${_destinationController.text.trim()} Trip'
+                : 'Trip Plan'),
+        isDark: isDark,
+      ),
+    );
   }
 
   @override
@@ -3841,6 +3899,28 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
           ],
         ),
         centerTitle: false,
+        actions: [
+          // Add member icon visible ONLY for Host and ONLY on sections 3, 4, 5 (all except first 2: Details, Dates)
+          if (_isHost && _currentStep >= 3)
+            Padding(
+              padding: const EdgeInsets.only(right: 8.0),
+              child: IconButton(
+                tooltip: 'Add Member / Trip QR',
+                icon: Image.asset(
+                  'assets/images/add_member_icon.png',
+                  width: 24,
+                  height: 24,
+                  color: isDark ? Colors.white : const Color(0xFF0F172A),
+                  errorBuilder: (context, error, stackTrace) => Icon(
+                    Icons.person_add_alt_1_rounded,
+                    color: isDark ? Colors.white : const Color(0xFF0F172A),
+                    size: 24,
+                  ),
+                ),
+                onPressed: () => _showTripQrModal(context, isDark),
+              ),
+            ),
+        ],
       ),
       body: SafeArea(
         child: Column(
@@ -3989,3 +4069,316 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     );
   }
 }
+
+class TripQrModalDialog extends StatefulWidget {
+  final String tripCode;
+  final String tripName;
+  final bool isDark;
+
+  const TripQrModalDialog({
+    super.key,
+    required this.tripCode,
+    required this.tripName,
+    required this.isDark,
+  });
+
+  @override
+  State<TripQrModalDialog> createState() => _TripQrModalDialogState();
+}
+
+class _TripQrModalDialogState extends State<TripQrModalDialog> {
+  final GlobalKey _qrCardKey = GlobalKey();
+  bool _isSharing = false;
+
+  Future<void> _shareQrCode() async {
+    if (_isSharing) return;
+    setState(() => _isSharing = true);
+
+    try {
+      // Ensure repainting has completed
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      final boundary = _qrCardKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) {
+        throw Exception('Could not locate QR card boundary.');
+      }
+
+      final ui.Image image = await boundary.toImage(pixelRatio: 3.0);
+      final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      if (byteData == null) {
+        throw Exception('Failed to obtain image data.');
+      }
+
+      final img.Image convertedImage = img.Image.fromBytes(
+        width: image.width,
+        height: image.height,
+        bytes: byteData.buffer,
+        order: img.ChannelOrder.rgba,
+      );
+
+      final List<int> jpegBytes = img.encodeJpg(convertedImage, quality: 95);
+
+      final tempDir = await getTemporaryDirectory();
+      final filePath = '${tempDir.path}/trip_qr_${widget.tripCode}.jpeg';
+      final file = File(filePath);
+      await file.writeAsBytes(jpegBytes, flush: true);
+
+      final xFile = XFile(
+        file.path,
+        mimeType: 'image/jpeg',
+        name: 'trip_qr_${widget.tripCode}.jpeg',
+      );
+
+      final tripDisplayName = widget.tripName.trim().isNotEmpty ? widget.tripName.trim() : 'Trip Plan';
+
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [xFile],
+          text:
+              'Join my trip "$tripDisplayName" on NextTripia!\nTrip Code: ${widget.tripCode}\nLink: nexttripia://trip/join?code=${widget.tripCode}',
+          subject: 'Trip Invite: $tripDisplayName',
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error sharing QR Code: $e'),
+            backgroundColor: const Color(0xFFEF4444),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSharing = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final qrPayload = 'nexttripia://trip/join?code=${widget.tripCode}';
+    final cardBg = widget.isDark ? const Color(0xFF1E293B) : Colors.white;
+    final textColor = widget.isDark ? Colors.white : const Color(0xFF0F172A);
+    final subtextColor = widget.isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B);
+
+    return Dialog(
+      backgroundColor: cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 22),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Top Row: Title + Close Icon
+            Row(
+              children: [
+                Container(
+                  width: 36,
+                  height: 36,
+                  padding: const EdgeInsets.all(7),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF6366F1).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Image.asset(
+                    'assets/images/add_member_icon.png',
+                    color: const Color(0xFF6366F1),
+                    errorBuilder: (context, error, stackTrace) => const Icon(
+                      Icons.person_add_alt_1_rounded,
+                      color: Color(0xFF6366F1),
+                      size: 20,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Invite Members',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                          color: textColor,
+                        ),
+                      ),
+                      Text(
+                        widget.tripName.trim().isNotEmpty ? widget.tripName.trim() : 'Trip Planning',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: subtextColor,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: Icon(Icons.close_rounded, color: subtextColor, size: 22),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  splashRadius: 18,
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+
+            // Instruction subtitle
+            Text(
+              'Share or let members scan this QR code to join directly into the planning room.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 12.5,
+                color: subtextColor,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // RepaintBoundary wrapping the QR card for high-resolution JPEG sharing
+            RepaintBoundary(
+              key: _qrCardKey,
+              child: Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: const Color(0xFFE2E8F0)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.06),
+                      blurRadius: 16,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.flight_takeoff_rounded, color: Color(0xFF6366F1), size: 18),
+                        SizedBox(width: 6),
+                        Text(
+                          'NextTripia',
+                          style: TextStyle(
+                            color: Color(0xFF0F172A),
+                            fontWeight: FontWeight.w800,
+                            fontSize: 15,
+                            letterSpacing: 0.3,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    QrImageView(
+                      data: qrPayload,
+                      version: QrVersions.auto,
+                      size: 210,
+                      backgroundColor: Colors.white,
+                      eyeStyle: const QrEyeStyle(
+                        eyeShape: QrEyeShape.square,
+                        color: Color(0xFF0F172A),
+                      ),
+                      dataModuleStyle: const QrDataModuleStyle(
+                        dataModuleShape: QrDataModuleShape.square,
+                        color: Color(0xFF0F172A),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF1F5F9),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      child: Text(
+                        'TRIP CODE: ${widget.tripCode}',
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1.2,
+                          color: Color(0xFF334155),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+
+            // Option under QR code: Share in JPEG form through other mobile apps
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: ElevatedButton.icon(
+                onPressed: _isSharing ? null : _shareQrCode,
+                icon: _isSharing
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                        ),
+                      )
+                    : const Icon(Icons.share_rounded, size: 20),
+                label: Text(
+                  _isSharing ? 'Generating JPEG...' : 'Share QR as JPEG',
+                  style: const TextStyle(
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF6366F1),
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            // Tap to Copy Code
+            TextButton.icon(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: widget.tripCode));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Trip code "${widget.tripCode}" copied to clipboard!'),
+                    backgroundColor: const Color(0xFF10B981),
+                    behavior: SnackBarBehavior.floating,
+                    duration: const Duration(seconds: 2),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.copy_rounded, size: 15, color: Color(0xFF6366F1)),
+              label: const Text(
+                'Copy Trip Code',
+                style: TextStyle(
+                  color: Color(0xFF6366F1),
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+

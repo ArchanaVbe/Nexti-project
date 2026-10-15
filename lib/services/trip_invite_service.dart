@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../screens/create_trip_screen.dart';
 
 class TripInviteService {
   static const String _pendingKey = 'pending_trip_code';
@@ -39,24 +40,45 @@ class TripInviteService {
     return false;
   }
 
-  // 3. Adds user's profile to Firestore trip collection
+  // 3. Adds user's profile to Firestore trip collection & directly navigates to planning room
   static Future<void> joinTripWithUser(BuildContext context, String tripCode, User user) async {
     final tripRef = FirebaseFirestore.instance.collection('trips').doc(tripCode);
 
-    await tripRef.set({
-      'memberUids': FieldValue.arrayUnion([user.uid]),
-      'members': FieldValue.arrayUnion([
-        {
-          'uid': user.uid,
-          'displayName': user.displayName ?? 'Traveler',
-          'email': user.email ?? '',
-          'joinedAt': DateTime.now().toIso8601String(),
-        }
-      ]),
-    }, SetOptions(merge: true));
+    final memberMap = {
+      'uid': user.uid,
+      'displayName': user.displayName ?? 'Traveler',
+      'email': user.email ?? '',
+      'photoUrl': user.photoURL ?? '',
+      'joinedAt': DateTime.now().toIso8601String(),
+    };
+
+    try {
+      await tripRef.set({
+        'memberUids': FieldValue.arrayUnion([user.uid]),
+        'approvedMembers': FieldValue.arrayUnion([memberMap]),
+        'members': FieldValue.arrayUnion([memberMap]),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint('Error joining trip in Firestore: $e');
+    }
+
+    DocumentSnapshot<Map<String, dynamic>>? snap;
+    try {
+      snap = await tripRef.get();
+    } catch (_) {}
 
     if (context.mounted) {
-      Navigator.pushReplacementNamed(context, '/trip_details', arguments: tripCode);
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => CreateTripScreen(
+            isHost: false,
+            tripCode: tripCode,
+            initialTripData: snap?.data(),
+            initialStep: 3, // Directly navigate to planning room
+          ),
+        ),
+      );
     }
   }
-}
+}

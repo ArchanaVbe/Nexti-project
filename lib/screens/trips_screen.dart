@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'trip_details_screen.dart';
+import 'trip_view_details_screen.dart';
 
 class TripsScreen extends StatefulWidget {
   const TripsScreen({super.key});
@@ -14,6 +15,7 @@ class TripsScreen extends StatefulWidget {
 
 class _TripsScreenState extends State<TripsScreen> {
   List<Map<String, dynamic>> _savedTrips = [];
+  String _userEmail = '';
 
   @override
   void initState() {
@@ -26,6 +28,7 @@ class _TripsScreenState extends State<TripsScreen> {
     final user = FirebaseAuth.instance.currentUser;
     final userEmail = user?.email?.trim().toLowerCase() ??
         prefs.getString('user_profile_email')?.trim().toLowerCase() ?? '';
+    _userEmail = userEmail;
     final key = userEmail.isNotEmpty ? 'saved_trips_$userEmail' : 'saved_trips';
     List<String> savedTrips = prefs.getStringList(key) ?? [];
 
@@ -60,9 +63,19 @@ class _TripsScreenState extends State<TripsScreen> {
           })
           .where((trip) => trip.isNotEmpty)
           .where((trip) {
+            // If user has been removed by the host, the plan must no longer be visible!
+            final List removedEmails = (trip['removedEmails'] as List?) ?? [];
+            final List removedUids = (trip['removedUids'] as List?) ?? [];
+            final myUid = user?.uid ?? '';
+            if (removedEmails.contains(userEmail) || (myUid.isNotEmpty && removedUids.contains(myUid))) {
+              return false;
+            }
+
             if (userEmail.isNotEmpty) {
               final tripEmail = (trip['userEmail'] ?? trip['creatorEmail'] ?? '').toString().trim().toLowerCase();
-              return tripEmail.isEmpty || tripEmail == userEmail;
+              final approved = (trip['approvedMembers'] as List?) ?? [];
+              final isParticipant = approved.any((m) => m is Map && m['email']?.toString().trim().toLowerCase() == userEmail);
+              return tripEmail.isEmpty || tripEmail == userEmail || isParticipant;
             }
             return true;
           })
@@ -81,6 +94,19 @@ class _TripsScreenState extends State<TripsScreen> {
         for (final doc in querySnapshot.docs) {
           final data = doc.data();
           final tripCode = (data['tripCode'] ?? doc.id).toString();
+          final List removedEmails = (data['removedEmails'] as List?) ?? [];
+          final List removedUids = (data['removedUids'] as List?) ?? [];
+          final myUid = user?.uid ?? '';
+
+          if (removedEmails.contains(userEmail) || (myUid.isNotEmpty && removedUids.contains(myUid))) {
+            final existingIdx = _savedTrips.indexWhere((t) => t['tripCode']?.toString() == tripCode);
+            if (existingIdx != -1) {
+              _savedTrips.removeAt(existingIdx);
+              hadUpdates = true;
+            }
+            continue;
+          }
+
           final index = _savedTrips.indexWhere((t) => t['tripCode']?.toString() == tripCode);
 
           if (index == -1) {
@@ -89,9 +115,48 @@ class _TripsScreenState extends State<TripsScreen> {
             newTrip['id'] = doc.id;
             _savedTrips.add(newTrip);
             hadUpdates = true;
-          } else if (data['itineraryPlan'] != null && _savedTrips[index]['itineraryPlan'] == null) {
-            _savedTrips[index]['itineraryPlan'] = data['itineraryPlan'];
-            hadUpdates = true;
+          } else {
+            if (data['itineraryPlan'] != null && _savedTrips[index]['itineraryPlan'] == null) {
+              _savedTrips[index]['itineraryPlan'] = data['itineraryPlan'];
+              hadUpdates = true;
+            }
+            if (data['approvedMembers'] != null) {
+              _savedTrips[index]['approvedMembers'] = data['approvedMembers'];
+            }
+          }
+        }
+
+        // Also sync trips where user is an approved participant
+        if (user != null) {
+          final participantSnapshot = await FirebaseFirestore.instance
+              .collection('trips')
+              .where('memberUids', arrayContains: user.uid)
+              .get();
+
+          for (final doc in participantSnapshot.docs) {
+            final data = doc.data();
+            final tripCode = (data['tripCode'] ?? doc.id).toString();
+            final List removedEmails = (data['removedEmails'] as List?) ?? [];
+            final List removedUids = (data['removedUids'] as List?) ?? [];
+            final myUid = user.uid;
+
+            if (removedEmails.contains(userEmail) || removedUids.contains(myUid)) {
+              final existingIdx = _savedTrips.indexWhere((t) => t['tripCode']?.toString() == tripCode);
+              if (existingIdx != -1) {
+                _savedTrips.removeAt(existingIdx);
+                hadUpdates = true;
+              }
+              continue;
+            }
+
+            final index = _savedTrips.indexWhere((t) => t['tripCode']?.toString() == tripCode);
+            if (index == -1) {
+              final Map<String, dynamic> newTrip = Map<String, dynamic>.from(data);
+              newTrip['tripCode'] = tripCode;
+              newTrip['id'] = doc.id;
+              _savedTrips.add(newTrip);
+              hadUpdates = true;
+            }
           }
         }
 
@@ -185,6 +250,23 @@ class _TripsScreenState extends State<TripsScreen> {
     }
   }
 
+  void _openTripViewDetails(Map<String, dynamic> trip, int index) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TripViewDetailsScreen(
+          trip: trip,
+          onTripUpdated: () {
+            _loadTrips();
+          },
+        ),
+      ),
+    );
+    if (mounted) {
+      _loadTrips();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -219,6 +301,15 @@ class _TripsScreenState extends State<TripsScreen> {
               itemBuilder: (context, index) {
                 final trip = _savedTrips[index];
                 final places = (trip['places'] as List?)?.join(', ') ?? 'No places';
+
+                final currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+                final hostEmail = (trip['userEmail'] ?? trip['creatorEmail'] ?? '').toString().trim().toLowerCase();
+                final hostUid = (trip['hostUid'] ?? '').toString();
+                final bool isHost = trip['isHost'] == true ||
+                    trip['isHost'] == null ||
+                    (hostUid.isNotEmpty && hostUid == currentUid) ||
+                    (hostEmail.isNotEmpty && _userEmail.isNotEmpty && hostEmail == _userEmail);
+
                 return Card(
                   margin: const EdgeInsets.only(bottom: 16),
                   shape: RoundedRectangleBorder(
@@ -230,86 +321,86 @@ class _TripsScreenState extends State<TripsScreen> {
                   elevation: 2,
                   color: isDark ? const Color(0xFF1E293B) : Colors.white,
                   clipBehavior: Clip.antiAlias,
-                  child: InkWell(
-                    onTap: () => _openTripDetails(trip, index),
-                    splashColor: const Color(0xFF6366F1).withValues(alpha: 0.1),
-                    highlightColor: const Color(0xFF6366F1).withValues(alpha: 0.05),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  trip['destination'] ?? 'Unknown Destination',
-                                  style: TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
-                                    color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
-                                  ),
-                                ),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete_outline, color: Colors.red),
-                                onPressed: () => _confirmDelete(index),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              Icon(
-                                Icons.calendar_today,
-                                size: 16,
-                                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                '${trip['startDate']} - ${trip['endDate']}',
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                trip['destination'] ?? 'Unknown Destination',
                                 style: TextStyle(
-                                  color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
                                 ),
                               ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              Icon(
-                                Icons.group,
-                                size: 16,
-                                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                'Group Size: ${trip['groupSize']}',
-                                style: TextStyle(
-                                  color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          Text(
-                            'Selected Places:',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: isDark ? const Color(0xFFE2E8F0) : const Color(0xFF334155),
                             ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            places,
-                            style: TextStyle(
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline, color: Colors.red),
+                              onPressed: () => _confirmDelete(index),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.calendar_today,
+                              size: 16,
                               color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
                             ),
+                            const SizedBox(width: 8),
+                            Text(
+                              '${trip['startDate']} - ${trip['endDate']}',
+                              style: TextStyle(
+                                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.group,
+                              size: 16,
+                              color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Group Size: ${trip['groupSize']}',
+                              style: TextStyle(
+                                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'Selected Places:',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: isDark ? const Color(0xFFE2E8F0) : const Color(0xFF334155),
                           ),
-                          const SizedBox(height: 14),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          places,
+                          style: TextStyle(
+                            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+
+                        // View Plan & Google Map
+                        GestureDetector(
+                          onTap: () => _openTripDetails(trip, index),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                             decoration: BoxDecoration(
                               color: isDark ? const Color(0xFF312E81) : const Color(0xFFEEF2FF),
                               borderRadius: BorderRadius.circular(10),
@@ -343,8 +434,54 @@ class _TripsScreenState extends State<TripsScreen> {
                               ],
                             ),
                           ),
+                        ),
+
+                        // Option under "View Plan & Google Map" called "View Details" (Visible to Host)
+                        if (isHost) ...[
+                          const SizedBox(height: 8),
+                          GestureDetector(
+                            onTap: () => _openTripViewDetails(trip, index),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: isDark ? const Color(0xFF4338CA).withValues(alpha: 0.6) : const Color(0xFFCBD5E1),
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        Icons.info_outline_rounded,
+                                        size: 16,
+                                        color: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF6366F1),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'View Details',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w700,
+                                          color: isDark ? const Color(0xFFF1F5F9) : const Color(0xFF0F172A),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  Icon(
+                                    Icons.arrow_forward_ios_rounded,
+                                    size: 13,
+                                    color: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF6366F1),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
                         ],
-                      ),
+                      ],
                     ),
                   ),
                 );
