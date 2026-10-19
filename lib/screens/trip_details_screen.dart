@@ -14,6 +14,7 @@ import '../models/trip_plan_models.dart';
 import '../services/karnataka_places.dart';
 import '../services/road_routing_service.dart';
 import '../services/one_day_trip_service.dart';
+import '../services/group_trip_schedule_service.dart';
 import '../services/trip_api.dart';
 
 class TripDetailsScreen extends StatefulWidget {
@@ -168,10 +169,16 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
   @override
   void didUpdateWidget(covariant TripDetailsScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (_activeSchedule == null) {
-      final rawPlaces = (widget.trip['places'] as List?)?.map((e) => e.toString()).toList() ?? [];
+    final oldPlaces = (oldWidget.trip['places'] as List?)?.map((e) => e.toString()).toList() ?? [];
+    final newPlaces = (widget.trip['places'] as List?)?.map((e) => e.toString()).toList() ?? [];
+    final placesChanged = !listEquals(oldPlaces, newPlaces);
+    final planChanged = widget.trip['itineraryPlan'] != oldWidget.trip['itineraryPlan'];
+    final datesChanged = widget.trip['startDate'] != oldWidget.trip['startDate'] ||
+        widget.trip['endDate'] != oldWidget.trip['endDate'];
+
+    if (_activeSchedule == null || placesChanged || planChanged || datesChanged) {
       final daysCount = _calculateDaysCount();
-      _activeSchedule = _buildDailySchedule(rawPlaces, daysCount);
+      _activeSchedule = _buildDailySchedule(newPlaces, daysCount);
     }
     _initializeCoordinatesAndMarkers();
     if (_mapController != null) {
@@ -195,6 +202,24 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
     }
 
     var rawPlaces = (widget.trip['places'] as List?)?.map((e) => e.toString()).toList() ?? [];
+    // Sanitize to only strictly voted/selected places (no current-location strings, GPS coordinates, or generic stops)
+    rawPlaces = rawPlaces.where((p) {
+      final l = p.trim().toLowerCase();
+      return l.isNotEmpty &&
+          !l.startsWith('day ') &&
+          !l.startsWith('stop_') &&
+          !l.startsWith('local_') &&
+          !l.startsWith('start:') &&
+          l != 'starting point' &&
+          !l.startsWith('location (') &&
+          !l.startsWith('present location') &&
+          !l.contains('taralabalu') &&
+          !l.contains('layout rd') &&
+          !RegExp(r'^\s*\(?\s*-?\d+\.\d+').hasMatch(l) &&
+          !l.endsWith(' hotel') &&
+          !l.endsWith(' resort');
+    }).toList();
+
     if (rawPlaces.isEmpty) {
       final curated = KarnatakaPlacesRegistry.getCuratedAttractions(destRaw);
       if (curated.isNotEmpty) {
@@ -212,13 +237,12 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
     final markers = <Marker>{};
     final routePoints = <LatLng>[];
 
-    // Add hotel marker if available
+    // Optional hotel marker if available (does not distort the primary attraction sequence)
     final hotelName = widget.trip['hotel']?.toString();
     final hotelLat = (widget.trip['hotelLat'] as num?)?.toDouble();
     final hotelLng = (widget.trip['hotelLng'] as num?)?.toDouble();
     if (hotelLat != null && hotelLng != null && hotelLat != 0.0 && hotelLng != 0.0) {
       final hotelPos = LatLng(hotelLat, hotelLng);
-      routePoints.add(hotelPos);
       markers.add(
         Marker(
           markerId: const MarkerId('trip_hotel'),
@@ -230,22 +254,7 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
           ),
         ),
       );
-    } else {
-      routePoints.add(_destinationCenter);
     }
-
-    // Add destination center marker
-    markers.add(
-      Marker(
-        markerId: const MarkerId('destination_center'),
-        position: _destinationCenter,
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
-        infoWindow: InfoWindow(
-          title: '$destRaw Center',
-          snippet: 'Trip Base Destination',
-        ),
-      ),
-    );
 
     // 2. Resolve place coordinates
     for (int i = 0; i < rawPlaces.length; i++) {
@@ -787,10 +796,11 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
       return;
     }
 
-    double minLat = _destinationCenter.latitude;
-    double maxLat = _destinationCenter.latitude;
-    double minLng = _destinationCenter.longitude;
-    double maxLng = _destinationCenter.longitude;
+    final firstCoord = _placeCoordinates.values.first;
+    double minLat = firstCoord.latitude;
+    double maxLat = firstCoord.latitude;
+    double minLng = firstCoord.longitude;
+    double maxLng = firstCoord.longitude;
 
     for (var pos in _placeCoordinates.values) {
       minLat = math.min(minLat, pos.latitude);
@@ -800,8 +810,8 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
     }
 
     final bounds = LatLngBounds(
-      southwest: LatLng(minLat - 0.03, minLng - 0.03),
-      northeast: LatLng(maxLat + 0.03, maxLng + 0.03),
+      southwest: LatLng(minLat - 0.02, minLng - 0.02),
+      northeast: LatLng(maxLat + 0.02, maxLng + 0.02),
     );
 
     _mapController!.animateCamera(CameraUpdate.newLatLngBounds(bounds, 50));
@@ -813,6 +823,7 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
     if (sType == 'TRANSIT') return Icons.directions_car_rounded;
     if (sType == 'BREAK') return Icons.coffee_rounded;
     if (sType == 'START' || sType == 'END') return Icons.hotel_rounded;
+    if (sType == 'LEISURE') return Icons.park_rounded;
 
     final lower = place.toLowerCase();
     if (lower.contains('trek') || lower.contains('mountain') || lower.contains('climb') || lower.contains('rafting') || lower.contains('adventure')) {
@@ -835,6 +846,7 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
     if (sType == 'TRANSIT') return const Color(0xFF3B82F6);
     if (sType == 'BREAK') return const Color(0xFF10B981);
     if (sType == 'START' || sType == 'END') return const Color(0xFF6366F1);
+    if (sType == 'LEISURE') return const Color(0xFF0D9488);
 
     final lower = place.toLowerCase();
     if (lower.contains('trek') || lower.contains('mountain') || lower.contains('climb') || lower.contains('rafting') || lower.contains('adventure')) {
@@ -900,7 +912,6 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
     final startStr = widget.trip['startDate']?.toString() ?? '';
     final endStr = widget.trip['endDate']?.toString() ?? '';
     final hotel = widget.trip['hotel']?.toString();
-    final startPoint = widget.trip['startPoint']?.toString();
 
     // Parse date strings for each day
     final List<String> dateStrings = [];
@@ -928,7 +939,86 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
       }
     } catch (_) {}
 
-    // Check if AI-generated itinerary plan exists and is dense/complete
+    final cleanVotedPlaces = places.where((p) {
+      final l = p.trim().toLowerCase();
+      return l.isNotEmpty &&
+          !l.startsWith('day ') &&
+          !l.startsWith('stop_') &&
+          !l.startsWith('local_') &&
+          !l.startsWith('start:') &&
+          l != 'starting point' &&
+          !l.startsWith('location (') &&
+          !l.startsWith('present location') &&
+          !l.contains('taralabalu') &&
+          !l.contains('layout rd') &&
+          !RegExp(r'^\s*\(?\s*-?\d+\.\d+').hasMatch(l) &&
+          !l.endsWith(' hotel') &&
+          !l.endsWith(' resort');
+    }).toList();
+
+    bool hasDisallowedStops(List<Map<String, dynamic>> sched) {
+      for (final d in sched) {
+        final acts = (d['activities'] as List?) ?? (d['stops'] as List?) ?? [];
+        for (final a in acts) {
+          if (a is Map) {
+            final name = (a['place'] ?? a['name'] ?? '').toString().toLowerCase();
+            final addr = (a['address'] ?? '').toString().toLowerCase();
+            final st = (a['stopType'] ?? a['period'] ?? a['activity_type'] ?? '').toString().toUpperCase();
+            if (st == 'START' ||
+                name.startsWith('start:') ||
+                name.contains('cultural discovery') ||
+                name.contains('twilight stroll') ||
+                name.contains('artisan bazaars') ||
+                name.contains('heritage street walk') ||
+                name.contains('golden hour sunset') ||
+                name.contains('sunset viewpoint') ||
+                addr.contains('taralabalu') ||
+                addr.contains('layout rd') ||
+                addr.startsWith('location (')) {
+              return true;
+            }
+          }
+        }
+      }
+      return false;
+    }
+
+    // 0. If replannedPlan exists, prioritize it directly if it has no disallowed fake stops
+    if (widget.trip['replannedPlan'] is List && (widget.trip['replannedPlan'] as List).isNotEmpty) {
+      final repList = widget.trip['replannedPlan'] as List;
+      final List<Map<String, dynamic>> parsedReplanned = [];
+      for (var d in repList) {
+        final dMap = Map<String, dynamic>.from(d as Map);
+        final rawActs = (dMap['activities'] as List?) ?? (dMap['stops'] as List?) ?? [];
+        final List<Map<String, String>> acts = rawActs.map((a) {
+          final aMap = Map<String, dynamic>.from(a as Map);
+          return {
+            'place': (aMap['place'] ?? aMap['name'] ?? aMap['place_name'] ?? 'Scheduled Stop').toString(),
+            'name': (aMap['place'] ?? aMap['name'] ?? aMap['place_name'] ?? 'Scheduled Stop').toString(),
+            'time': (aMap['time'] ?? 'Flexible Time').toString(),
+            'period': (aMap['period'] ?? aMap['stopType'] ?? aMap['activity_type'] ?? 'VISIT').toString().toUpperCase(),
+            'activity': (aMap['activity'] ?? aMap['notes'] ?? '').toString(),
+            'notes': (aMap['activity'] ?? aMap['notes'] ?? '').toString(),
+            'address': (aMap['address'] ?? '').toString(),
+            'stopType': (aMap['stopType'] ?? aMap['activity_type'] ?? 'VISIT').toString().toUpperCase(),
+          };
+        }).toList();
+        dMap['activities'] = acts;
+        dMap['stops'] = acts.map((a) => {
+          'name': a['place'],
+          'time': a['time'],
+          'activity_type': a['stopType']?.toLowerCase(),
+          'notes': a['activity'],
+          'address': a['address'],
+        }).toList();
+        parsedReplanned.add(dMap);
+      }
+      if (parsedReplanned.isNotEmpty && !hasDisallowedStops(parsedReplanned)) {
+        return parsedReplanned;
+      }
+    }
+
+    // Check if AI-generated itinerary plan exists (only use if free of disallowed stops)
     final planData = widget.trip['itineraryPlan'];
     if (planData != null) {
       try {
@@ -936,56 +1026,54 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
             ? planData
             : (planData is ItineraryPlan ? planData.toJson() : Map<String, dynamic>.from(planData));
         final scheduleList = (planMap['days'] ?? planMap['schedule']) as List?;
-        if (scheduleList != null && scheduleList.isNotEmpty && scheduleList.length >= days) {
+        if (scheduleList != null && scheduleList.isNotEmpty) {
           final List<Map<String, dynamic>> parsedSchedule = [];
-          bool hasSparseDay = false;
           for (var dayItem in scheduleList) {
             final dayMap = Map<String, dynamic>.from(dayItem);
-            final stopsList = (dayMap['stops'] as List?) ?? [];
-            if (stopsList.length < 5) {
-              hasSparseDay = true;
-              break;
+            final dayNum = dayMap['day_number'] ?? dayMap['dayNumber'] ?? (parsedSchedule.length + 1);
+            final dateStr = (dayMap['date'] ?? '').toString();
+            final stopsList = (dayMap['stops'] as List?) ?? (dayMap['activities'] as List?) ?? [];
+            final List<Map<String, String>> activities = [];
+
+            for (var stopItem in stopsList) {
+              final stopMap = Map<String, dynamic>.from(stopItem);
+              final placeName = (stopMap['place'] ?? stopMap['name'] ?? stopMap['place_name'] ?? stopMap['placeName'] ?? '').toString();
+              final timeStr = (stopMap['time'] ?? '').toString();
+              final stopType = (stopMap['activity_type'] ?? stopMap['stop_type'] ?? stopMap['stopType'] ?? stopMap['period'] ?? 'visit').toString().toUpperCase();
+              final activity = (stopMap['notes'] ?? stopMap['activity'] ?? '').toString();
+              final address = (stopMap['address'] ?? '').toString();
+
+              activities.add({
+                'place': placeName.isNotEmpty ? placeName : (activity.isNotEmpty ? activity : 'Scheduled Stop'),
+                'name': placeName.isNotEmpty ? placeName : (activity.isNotEmpty ? activity : 'Scheduled Stop'),
+                'time': timeStr.isNotEmpty ? timeStr : 'Flexible Time',
+                'period': stopType,
+                'activity': activity,
+                'notes': activity,
+                'address': address,
+                'stopType': stopType,
+              });
+            }
+
+            if (activities.isNotEmpty) {
+              parsedSchedule.add({
+                'dayNumber': dayNum,
+                'title': dateStr.isNotEmpty ? 'Day $dayNum • $dateStr' : 'Day $dayNum • Highlights',
+                'date': dateStr,
+                'activities': activities,
+                'stops': activities.map((a) => {
+                  'name': a['place'],
+                  'time': a['time'],
+                  'activity_type': a['stopType']?.toLowerCase(),
+                  'notes': a['activity'],
+                  'address': a['address'],
+                }).toList(),
+              });
             }
           }
-          if (!hasSparseDay) {
-            for (var dayItem in scheduleList) {
-              final dayMap = Map<String, dynamic>.from(dayItem);
-              final dayNum = dayMap['day_number'] ?? dayMap['dayNumber'] ?? (parsedSchedule.length + 1);
-              final dateStr = (dayMap['date'] ?? '').toString();
-              final stopsList = (dayMap['stops'] as List?) ?? [];
-              final List<Map<String, String>> activities = [];
 
-              for (var stopItem in stopsList) {
-                final stopMap = Map<String, dynamic>.from(stopItem);
-                final placeName = (stopMap['name'] ?? stopMap['place_name'] ?? stopMap['placeName'] ?? '').toString();
-                final timeStr = (stopMap['time'] ?? '').toString();
-                final stopType = (stopMap['activity_type'] ?? stopMap['stop_type'] ?? stopMap['stopType'] ?? 'visit').toString().toUpperCase();
-                final activity = (stopMap['notes'] ?? stopMap['activity'] ?? '').toString();
-                final address = (stopMap['address'] ?? '').toString();
-
-                activities.add({
-                  'place': placeName.isNotEmpty ? placeName : (activity.isNotEmpty ? activity : 'Scheduled Stop'),
-                  'time': timeStr.isNotEmpty ? timeStr : 'Flexible Time',
-                  'period': stopType,
-                  'activity': activity,
-                  'address': address,
-                  'stopType': stopType,
-                });
-              }
-
-              if (activities.isNotEmpty) {
-                parsedSchedule.add({
-                  'dayNumber': dayNum,
-                  'title': dateStr.isNotEmpty ? 'Day $dayNum • $dateStr' : 'Day $dayNum • Highlights',
-                  'date': dateStr,
-                  'activities': activities,
-                });
-              }
-            }
-
-            if (parsedSchedule.length >= days) {
-              return parsedSchedule;
-            }
+          if (parsedSchedule.length >= days && !hasDisallowedStops(parsedSchedule)) {
+            return parsedSchedule;
           }
         }
       } catch (e) {
@@ -993,43 +1081,19 @@ class _TripDetailsScreenState extends State<TripDetailsScreen> {
       }
     }
 
-    // Always generate the optimized, gap-free, clash-free schedule with exact number of days
-    return OneDayTripService.buildMultiDayPlanForTrip(
+    // Generate group multi-day plan strictly based on voted places
+    return GroupTripScheduleService.buildMultiDayPlan(
       destination: destination.toString(),
       numberOfDays: days,
-      selectedPlaces: places,
+      votedPlaces: cleanVotedPlaces.isNotEmpty ? cleanVotedPlaces : places,
       dateStrings: dateStrings.isNotEmpty ? dateStrings : null,
       hotel: hotel,
-      startPoint: startPoint,
+      placeCoordinates: widget.trip['placeCoordinates'] is Map
+          ? Map<String, dynamic>.from(widget.trip['placeCoordinates'] as Map)
+          : null,
     );
   }
 
-  void _shareTripPlan() {
-    final destination = widget.trip['destination'] ?? 'Karnataka';
-    final dates = '${widget.trip['startDate']} to ${widget.trip['endDate']}';
-    final group = widget.trip['groupSize'] ?? '1';
-    final places = (widget.trip['places'] as List?)?.join(', ') ?? 'No places selected';
-
-    final text = '''
-🌟 NexTripia-AI Plan for $destination
-📅 Dates: $dates
-👥 Travelers: $group
-📍 Must-Visit Places:
-$places
-
-Plan crafted with NexTripia-AI Travel Companion!
-''';
-
-    Clipboard.setData(ClipboardData(text: text));
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Trip plan copied to clipboard! Ready to share.'),
-        backgroundColor: Color(0xFF4F46E5),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -1105,11 +1169,6 @@ Plan crafted with NexTripia-AI Travel Companion!
           ),
         ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.share_outlined, color: Color(0xFF6366F1)),
-            tooltip: 'Share Plan',
-            onPressed: _shareTripPlan,
-          ),
           if (widget.onDelete != null)
             IconButton(
               icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
@@ -2477,10 +2536,6 @@ Plan crafted with NexTripia-AI Travel Companion!
                           ] else ...[
                             ...suggestions.map((s) {
                               final isFit = s.timeStatus == 'fits';
-                              final isTight = s.timeStatus == 'tight';
-                              final badgeColor = isFit
-                                  ? const Color(0xFF10B981)
-                                  : (isTight ? const Color(0xFFF59E0B) : const Color(0xFFEF4444));
 
                               return Container(
                                 margin: const EdgeInsets.only(bottom: 12),
@@ -2522,25 +2577,26 @@ Plan crafted with NexTripia-AI Travel Companion!
                                         Container(
                                           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                                           decoration: BoxDecoration(
-                                            color: badgeColor.withValues(alpha: 0.12),
+                                            color: const Color(0xFF6366F1).withValues(alpha: 0.12),
                                             borderRadius: BorderRadius.circular(8),
-                                            border: Border.all(color: badgeColor.withValues(alpha: 0.3)),
+                                            border: Border.all(color: const Color(0xFF6366F1).withValues(alpha: 0.3)),
                                           ),
                                           child: Row(
                                             mainAxisSize: MainAxisSize.min,
                                             children: [
-                                              Icon(
-                                                isFit ? Icons.check_circle_outline : (isTight ? Icons.alarm : Icons.warning_amber_rounded),
+                                              const Icon(
+                                                Icons.place_outlined,
                                                 size: 12,
-                                                color: badgeColor,
+                                                color: Color(0xFF6366F1),
                                               ),
                                               const SizedBox(width: 4),
                                               Text(
-                                                s.timeStatusBadge,
-                                                style: TextStyle(
+                                                s.category.isNotEmpty ? s.category.toUpperCase() : 'DETOUR',
+                                                style: const TextStyle(
                                                   fontSize: 10,
                                                   fontWeight: FontWeight.w800,
-                                                  color: badgeColor,
+                                                  color: Color(0xFF6366F1),
+                                                  letterSpacing: 0.4,
                                                 ),
                                               ),
                                             ],
@@ -2598,20 +2654,21 @@ Plan crafted with NexTripia-AI Travel Companion!
                                     Row(
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
-                                        Padding(
-                                          padding: const EdgeInsets.only(top: 2),
+                                        const Padding(
+                                          padding: EdgeInsets.only(top: 2),
                                           child: Icon(
-                                            isFit ? Icons.verified_rounded : (isTight ? Icons.access_time_rounded : Icons.warning_amber_rounded),
+                                            Icons.auto_awesome,
                                             size: 13.5,
-                                            color: badgeColor,
+                                            color: Color(0xFF10B981),
                                           ),
                                         ),
                                         const SizedBox(width: 6),
                                         Expanded(
                                           child: Text(
-                                            s.summary,
+                                            'Smart AI auto-rearranges Day ${currentDayIdx + 1} schedule & next stops smoothly',
                                             style: TextStyle(
                                               fontSize: 11.5,
+                                              fontWeight: FontWeight.w500,
                                               color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
                                               height: 1.25,
                                             ),
@@ -2624,7 +2681,7 @@ Plan crafted with NexTripia-AI Travel Companion!
                                     const SizedBox(height: 12),
                                     SizedBox(
                                       width: double.infinity,
-                                      height: 38,
+                                      height: 40,
                                       child: ElevatedButton(
                                         onPressed: () {
                                           Navigator.pop(bottomSheetContext);
@@ -2635,7 +2692,7 @@ Plan crafted with NexTripia-AI Travel Companion!
                                           );
                                         },
                                         style: ElevatedButton.styleFrom(
-                                          backgroundColor: isFit ? const Color(0xFF6366F1) : (isTight ? const Color(0xFFD97706) : const Color(0xFF475569)),
+                                          backgroundColor: const Color(0xFF6366F1),
                                           foregroundColor: Colors.white,
                                           shape: RoundedRectangleBorder(
                                             borderRadius: BorderRadius.circular(10),
@@ -2643,17 +2700,19 @@ Plan crafted with NexTripia-AI Travel Companion!
                                           padding: const EdgeInsets.symmetric(horizontal: 14),
                                           elevation: 0,
                                         ),
-                                        child: FittedBox(
-                                          fit: BoxFit.scaleDown,
-                                          child: Text(
-                                            isFit
-                                                ? 'Add & Replan Schedule (Zero Clash)'
-                                                : (isTight ? 'Add with Schedule Shift' : 'Add Anyway (May delay next stop)'),
-                                            style: const TextStyle(
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.bold,
+                                        child: const Row(
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          children: [
+                                            Icon(Icons.add_circle_outline_rounded, size: 16),
+                                            SizedBox(width: 6),
+                                            Text(
+                                              'Add to Day Plan',
+                                              style: TextStyle(
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.bold,
+                                              ),
                                             ),
-                                          ),
+                                          ],
                                         ),
                                       ),
                                     ),
@@ -2688,8 +2747,9 @@ Plan crafted with NexTripia-AI Travel Companion!
     final updatedSchedule = List<Map<String, dynamic>>.from(
       (_activeSchedule ?? []).map((d) {
         final dayMap = Map<String, dynamic>.from(d);
+        final rawActs = (dayMap['activities'] as List?) ?? (dayMap['stops'] as List?) ?? [];
         final acts = List<Map<String, dynamic>>.from(
-          ((dayMap['activities'] as List?) ?? []).map((a) => Map<String, dynamic>.from(a as Map)),
+          rawActs.map((a) => Map<String, dynamic>.from(a as Map)),
         );
         dayMap['activities'] = acts;
         return dayMap;
@@ -2701,46 +2761,104 @@ Plan crafted with NexTripia-AI Travel Companion!
     final targetDay = updatedSchedule[dayIdx];
     final acts = targetDay['activities'] as List<Map<String, dynamic>>;
 
-    final newAct = <String, dynamic>{
-      'place': suggestion.name,
-      'time': suggestion.suggestedSlot,
-      'period': suggestion.category.toUpperCase(),
-      'activity': suggestion.summary.isNotEmpty
-          ? suggestion.summary
-          : 'Detour visit near ${suggestion.address ?? 'current location'}',
-      'address': suggestion.address ?? 'Near current spot',
-      'stopType': 'VISIT',
-    };
-
     final insertIdx = (insertAfterStopIdx >= 0 && insertAfterStopIdx < acts.length)
         ? insertAfterStopIdx + 1
         : acts.length;
 
+    // Determine departure time of preceding stop
+    int prevEndMin = 540; // 09:00 AM default
+    if (insertAfterStopIdx >= 0 && insertAfterStopIdx < acts.length) {
+      final prevAct = acts[insertAfterStopIdx];
+      final prevTimeStr = (prevAct['time'] ?? '').toString();
+      final pEnd = TripApi.parseTimeToMinutes(prevTimeStr, preferEnd: true);
+      if (pEnd != null) {
+        prevEndMin = pEnd;
+      }
+    }
+
+    final travelToDetour = math.max(5, suggestion.travelFromCurrentMinutes);
+    final detourStartMin = prevEndMin + travelToDetour;
+    final detourDurationMin = math.max(30, suggestion.visitDurationMinutes);
+    final detourEndMin = detourStartMin + detourDurationMin;
+
+    final detourTimeSlot = '${TripApi.formatMinutesToTime(detourStartMin)} - ${TripApi.formatMinutesToTime(detourEndMin)}';
+
+    final newAct = <String, dynamic>{
+      'place': suggestion.name,
+      'name': suggestion.name,
+      'time': detourTimeSlot,
+      'period': suggestion.category.isNotEmpty ? suggestion.category.toUpperCase() : 'VISIT',
+      'activity': 'Detour visit to ${suggestion.name} (${suggestion.category})',
+      'notes': 'Detour visit to ${suggestion.name} (${suggestion.category})',
+      'address': suggestion.address ?? suggestion.name,
+      'stopType': 'VISIT',
+      'lat': suggestion.lat,
+      'lng': suggestion.lng,
+    };
+
     acts.insert(insertIdx, newAct);
 
-    // Smoothly shift subsequent stops to guarantee zero schedule clashes
-    final detourEndMin = TripApi.parseTimeToMinutes(suggestion.suggestedSlot, preferEnd: true);
-    if (detourEndMin != null) {
-      int runningTimeMin = detourEndMin + suggestion.travelToNextMinutes;
-      for (int i = insertIdx + 1; i < acts.length; i++) {
-        final act = acts[i];
-        final actTimeStr = (act['time'] ?? '').toString();
-        final origStart = TripApi.parseTimeToMinutes(actTimeStr, preferEnd: false);
-        final origEnd = TripApi.parseTimeToMinutes(actTimeStr, preferEnd: true);
-        int dur = 60;
-        if (origStart != null && origEnd != null && origEnd > origStart) {
-          dur = origEnd - origStart;
-        }
+    // Rearrange all subsequent stops smoothly with transit buffers
+    int runningCursor = detourEndMin + math.max(10, suggestion.travelToNextMinutes);
+    for (int i = insertIdx + 1; i < acts.length; i++) {
+      final act = acts[i];
+      final actTimeStr = (act['time'] ?? '').toString();
+      final origStart = TripApi.parseTimeToMinutes(actTimeStr, preferEnd: false);
+      final origEnd = TripApi.parseTimeToMinutes(actTimeStr, preferEnd: true);
 
-        if (origStart != null && runningTimeMin > origStart) {
-          final newStart = runningTimeMin;
-          final newEnd = newStart + dur;
-          act['time'] = '${TripApi.formatMinutesToTime(newStart)} - ${TripApi.formatMinutesToTime(newEnd)}';
-          runningTimeMin = newEnd + 15;
-        } else if (origEnd != null) {
-          runningTimeMin = origEnd + 15;
+      int dur = 60;
+      if (origStart != null && origEnd != null && origEnd > origStart) {
+        dur = origEnd - origStart;
+      } else {
+        final sType = (act['stopType'] ?? act['period'] ?? '').toString().toUpperCase();
+        if (sType == 'MEAL') {
+          dur = 60;
+        } else if (sType == 'BREAK') {
+          dur = 45;
+        } else if (sType == 'START' || sType == 'END') {
+          dur = 15;
+        } else {
+          dur = 90;
         }
       }
+
+      int newStart;
+      if (origStart != null && origStart > runningCursor) {
+        newStart = origStart;
+      } else {
+        newStart = runningCursor;
+      }
+
+      final newEnd = newStart + dur;
+      act['time'] = '${TripApi.formatMinutesToTime(newStart)} - ${TripApi.formatMinutesToTime(newEnd)}';
+      runningCursor = newEnd + 15;
+    }
+
+    // Strongly type and sync activities and stops for all days
+    for (int d = 0; d < updatedSchedule.length; d++) {
+      final dayMap = updatedSchedule[d];
+      final rawA = (dayMap['activities'] as List?) ?? (dayMap['stops'] as List?) ?? [];
+      final List<Map<String, String>> sanitizedActs = rawA.map((a) {
+        final m = Map<String, dynamic>.from(a as Map);
+        return {
+          'place': (m['place'] ?? m['name'] ?? 'Scheduled Stop').toString(),
+          'name': (m['place'] ?? m['name'] ?? 'Scheduled Stop').toString(),
+          'time': (m['time'] ?? 'Flexible Time').toString(),
+          'period': (m['period'] ?? m['stopType'] ?? 'VISIT').toString().toUpperCase(),
+          'activity': (m['activity'] ?? m['notes'] ?? '').toString(),
+          'notes': (m['activity'] ?? m['notes'] ?? '').toString(),
+          'address': (m['address'] ?? '').toString(),
+          'stopType': (m['stopType'] ?? 'VISIT').toString().toUpperCase(),
+        };
+      }).toList();
+      dayMap['activities'] = sanitizedActs;
+      dayMap['stops'] = sanitizedActs.map((a) => {
+        'name': a['place'],
+        'time': a['time'],
+        'activity_type': a['stopType']?.toLowerCase(),
+        'notes': a['activity'],
+        'address': a['address'],
+      }).toList();
     }
 
     // 2. Update places list and coordinates
@@ -2755,13 +2873,13 @@ Plan crafted with NexTripia-AI Travel Companion!
       _selectedDayIndex = dayIdx;
     });
 
-    // 3. Update widget.trip
+    // 3. Update widget.trip with both formats
     if (widget.trip['initialPlan'] == null && _previousSchedule != null) {
       widget.trip['initialPlan'] = jsonDecode(jsonEncode(_previousSchedule));
     }
     widget.trip['hasReplan'] = true;
     widget.trip['replannedPlan'] = updatedSchedule;
-    widget.trip['places'] = _allPlaces;
+    widget.trip['places'] = List<String>.from(_allPlaces);
     final Map<String, dynamic> coordMap = {};
     _placeCoordinates.forEach((k, v) {
       coordMap[k] = {'lat': v.latitude, 'lng': v.longitude};
@@ -2792,7 +2910,7 @@ Plan crafted with NexTripia-AI Travel Companion!
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                'Trip replanned! Added ${suggestion.name} without schedule clash.',
+                'Added ${suggestion.name}! Day ${dayIdx + 1} schedule rearranged smoothly.',
                 style: const TextStyle(fontWeight: FontWeight.w600),
               ),
             ),
@@ -2809,7 +2927,7 @@ Plan crafted with NexTripia-AI Travel Companion!
                 _activeSchedule = _previousSchedule;
                 _allPlaces.remove(suggestion.name);
                 _placeCoordinates.remove(suggestion.name);
-                widget.trip['places'] = _allPlaces;
+                widget.trip['places'] = List<String>.from(_allPlaces);
                 widget.trip['itineraryPlan'] = {
                   'schedule': _activeSchedule,
                   'days': _activeSchedule,
@@ -3074,7 +3192,13 @@ Plan crafted with NexTripia-AI Travel Companion!
                 final dayPlan = schedule[activeIdx];
                 final dayNum = dayPlan['dayNumber'] as int;
                 final dayTitle = (dayPlan['title'] ?? 'Day $dayNum').toString();
-                final activities = (dayPlan['activities'] as List<Map<String, String>>?) ?? [];
+                final rawActs = (dayPlan['activities'] as List?) ?? (dayPlan['stops'] as List?) ?? [];
+                final List<Map<String, String>> activities = rawActs.map((a) {
+                  if (a is Map) {
+                    return a.map((k, v) => MapEntry(k.toString(), v?.toString() ?? ''));
+                  }
+                  return <String, String>{};
+                }).toList();
 
                 return Container(
                   margin: const EdgeInsets.only(bottom: 16),
@@ -3158,7 +3282,7 @@ Plan crafted with NexTripia-AI Travel Companion!
                           children: activities.asMap().entries.map((entry) {
                             final idx = entry.key;
                             final act = entry.value;
-                            final placeName = act['place']!;
+                            final placeName = (act['place'] ?? act['name'] ?? 'Scheduled Stop').toString();
                             final isVisited = _visitedPlaces.contains(placeName);
                             final isLast = idx == activities.length - 1;
                             final stopType = act['stopType'] ?? 'VISIT';

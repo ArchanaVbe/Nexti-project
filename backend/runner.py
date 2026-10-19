@@ -130,31 +130,32 @@ async def run_plan_async(
             places_lookup[p["name"]] = p
 
     selected_places = []
+    seen_names = set()
     for idx, pid in enumerate(selected_ids):
+        name = selected_names[idx] if (selected_names and idx < len(selected_names)) else None
+        place_obj = None
         if pid in places_lookup:
-            selected_places.append(places_lookup[pid])
-        elif selected_names and idx < len(selected_names) and selected_names[idx]:
-            selected_places.append(
-                {
-                    "place_id": pid,
-                    "name": selected_names[idx],
-                    "types": ["tourist_attraction"],
-                    "rating": 4.6,
-                }
-            )
-        else:
-            # Fallback for unknown id
-            name = pid.replace("local_", "").replace("city_", "").replace("_", " ").title()
-            if "stop" in name.lower() or not name.strip():
-                name = "City Attraction Landmark"
-            selected_places.append(
-                {
-                    "place_id": pid,
-                    "name": name,
-                    "types": ["tourist_attraction"],
-                    "rating": 4.5,
-                }
-            )
+            place_obj = dict(places_lookup[pid])
+        elif name and name in places_lookup:
+            place_obj = dict(places_lookup[name])
+
+        if not place_obj:
+            p_name = name or pid.replace("local_", "").replace("city_", "").replace("_", " ").title()
+            if "stop" in p_name.lower() or not p_name.strip():
+                p_name = "City Landmark"
+            place_obj = {
+                "place_id": pid,
+                "name": p_name,
+                "types": ["tourist_attraction"],
+                "rating": 4.5,
+            }
+
+        clean_name = place_obj.get("name", "").strip().lower()
+        if clean_name and clean_name not in seen_names:
+            if any(w in clean_name for w in ["taralabalu", "layout rd", "location (", "starting point", "start:"]):
+                continue
+            seen_names.add(clean_name)
+            selected_places.append(place_obj)
 
     itinerary_result: Optional[Dict[str, Any]] = None
 

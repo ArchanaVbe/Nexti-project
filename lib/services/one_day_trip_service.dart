@@ -2,10 +2,10 @@
 // Service providing curated, highly-efficient 1-day ready itineraries
 // across Karnataka cities featuring famous food spots and iconic exploration places.
 
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'karnataka_places.dart';
 import '../models/trip_plan_models.dart';
+import 'group_trip_schedule_service.dart';
 
 class OneDayStop {
   final String name;
@@ -1525,205 +1525,14 @@ class OneDayTripService {
     String? hotel,
     String? startPoint,
   }) {
-    final int totalDays = math.max(1, numberOfDays);
-
-    // Clean destination to find the city
-    String cleanCity = destination.split(',').first.trim();
-    cleanCity = cleanCity.replaceAll(RegExp(r'\s*\([^)]*\)'), '').trim();
-    if (cleanCity.isEmpty) cleanCity = 'Mysuru';
-
-    // Retrieve curated plan for this city
-    final basePlan = getPlanForCity(cleanCity);
-
-    // Filter valid user-selected places
-    final List<String> userPlaces = [];
-    for (final p in selectedPlaces) {
-      final trimmed = p.trim();
-      if (trimmed.isNotEmpty &&
-          !trimmed.toLowerCase().startsWith('day ') &&
-          !trimmed.toLowerCase().startsWith('stop_') &&
-          !userPlaces.contains(trimmed)) {
-        userPlaces.add(trimmed);
-      }
-    }
-
-    // Separate base stops into food and sights
-    final List<OneDayStop> baseFoodStops = basePlan.stops.where((s) => s.isFood).toList();
-    final List<OneDayStop> baseSightStops = basePlan.stops.where((s) => !s.isFood).toList();
-
-    // Pool of sights: User places first, then base sights, then registry sights
-    final List<String> poolSights = [];
-    poolSights.addAll(userPlaces);
-    for (final s in baseSightStops) {
-      if (!poolSights.contains(s.name)) {
-        poolSights.add(s.name);
-      }
-    }
-    final lowerClean = cleanCity.toLowerCase();
-    final regPlaces = KarnatakaPlacesRegistry.destinations.where((d) =>
-        d.name.toLowerCase().contains(lowerClean) ||
-        d.keywords.any((k) => k.toLowerCase().contains(lowerClean)));
-    for (final rp in regPlaces) {
-      final name = rp.name.split(',').first.trim();
-      if (!poolSights.contains(name)) {
-        poolSights.add(name);
-      }
-    }
-    if (poolSights.length < totalDays * 4) {
-      poolSights.addAll([
-        '$cleanCity Historic Fort & Ramparts',
-        '$cleanCity Botanical Lake & Eco Park',
-        '$cleanCity Royal Heritage Museum',
-        '$cleanCity Hilltop Panorama & Sunset Lookout',
-        '$cleanCity Sacred Temple & Ancient Gopura',
-        '$cleanCity Nature Bird Sanctuary & Riverfront',
-        '$cleanCity Handicraft & Silk Emporium',
-        '$cleanCity Valley Viewpoint & Tea Plantation',
-      ]);
-    }
-
-    // Distribute sights across the days (4 key sights per day)
-    final List<List<String>> sightsByDay = List.generate(totalDays, (_) => []);
-    int sightCursor = 0;
-    for (int d = 0; d < totalDays; d++) {
-      for (int slot = 0; slot < 4; slot++) {
-        if (sightCursor < poolSights.length) {
-          sightsByDay[d].add(poolSights[sightCursor]);
-          sightCursor++;
-        } else {
-          sightsByDay[d].add('$cleanCity Attraction #${slot + 1}');
-        }
-      }
-    }
-
-    final List<Map<String, dynamic>> resultDays = [];
-
-    for (int d = 0; d < totalDays; d++) {
-      final dayNum = d + 1;
-      final dateStr = (dateStrings != null && d < dateStrings.length && dateStrings[d].isNotEmpty)
-          ? dateStrings[d]
-          : 'Day $dayNum';
-      final daySights = sightsByDay[d];
-
-      final bStop = baseFoodStops.isNotEmpty ? baseFoodStops[d % baseFoodStops.length] : null;
-      final lStop = baseFoodStops.length > 1 ? baseFoodStops[(d + 1) % baseFoodStops.length] : bStop;
-      final tStop = baseFoodStops.length > 2 ? baseFoodStops[(d + 2) % baseFoodStops.length] : bStop;
-
-      final breakfastName = (d == 0 && bStop != null)
-          ? bStop.name
-          : (d == 1 && cleanCity.toLowerCase() == 'mysuru'
-              ? 'Gayatri Tiffin Room (GTR)'
-              : (d == 1 && cleanCity.toLowerCase() == 'shimoga'
-                  ? 'Sri Krishna Café (Durgigudi)'
-                  : (bStop?.name ?? '$cleanCity Authentic Morning Tiffin Stall')));
-
-      final lunchName = (d == 0 && lStop != null)
-          ? lStop.name
-          : (d == 1 && cleanCity.toLowerCase() == 'mysuru'
-              ? 'Poojari Fish Land & Regional Meals'
-              : (d == 1 && cleanCity.toLowerCase() == 'shimoga'
-                  ? 'Hotel Shubham Pure Veg Thali'
-                  : (lStop?.name ?? '$cleanCity Traditional Banana Leaf Meals')));
-
-      final treatName = (d == 0 && tStop != null)
-          ? tStop.name
-          : (d == 1 && cleanCity.toLowerCase() == 'mysuru'
-              ? 'Mahalaxmi Sweets & Filter Coffee'
-              : (d == 1 && cleanCity.toLowerCase() == 'shimoga'
-                  ? 'Malnad Tea Stall & Akki Roti Delicacies'
-                  : (tStop?.name ?? '$cleanCity Traditional Sweet Mart & Filter Coffee')));
-
-      final dinnerName = (cleanCity.toLowerCase() == 'mysuru')
-          ? (d == 0 ? 'Gufha Cave Themed Restaurant' : 'The Green Hotel Garden Dining')
-          : (cleanCity.toLowerCase() == 'shimoga'
-              ? (d == 0 ? 'Harsha Grand Thali & Family Dining' : 'Rice Bowl Malnad Restaurant')
-              : '$cleanCity Regional Dinner & Family Dining');
-
-      final List<Map<String, String>> activities = [
-        // 1. Breakfast (08:30 AM - 09:15 AM)
-        {
-          'place': breakfastName,
-          'time': '08:30 AM - 09:15 AM',
-          'period': 'Morning Breakfast ☕',
-          'activity': 'Delicious regional breakfast (crisp dosas, idli-vada, fresh coconut chutney) with steaming filter coffee (45 mins).',
-          'address': bStop?.address ?? 'Main Road, $cleanCity',
-          'stopType': 'MEAL',
-        },
-        // 2. Morning Landmark (09:30 AM - 11:30 AM)
-        {
-          'place': daySights[0],
-          'time': '09:30 AM - 11:30 AM',
-          'period': 'Morning Landmark 🏛️',
-          'activity': 'Explore premier heritage landmark, grand architecture & capture stunning morning photos • 15 mins travel to next.',
-          'address': 'Historic District, $cleanCity',
-          'stopType': 'VISIT',
-        },
-        // 3. Midday Wonder (11:45 AM - 01:00 PM)
-        {
-          'place': daySights[1],
-          'time': '11:45 AM - 01:00 PM',
-          'period': 'Midday Wonder 🌿',
-          'activity': 'Scenic walk, peaceful cultural exhibits and nature exploration (1 hr 15 mins) • Short walk to lunch feast.',
-          'address': 'Central Area, $cleanCity',
-          'stopType': 'VISIT',
-        },
-        // 4. Authentic Lunch Feast (01:00 PM - 02:15 PM)
-        {
-          'place': lunchName,
-          'time': '01:00 PM - 02:15 PM',
-          'period': 'Authentic Lunch 🍛',
-          'activity': 'Hearty regional cuisine & traditional multi-course thali served with ghee and local delicacies (1 hr 15 mins).',
-          'address': lStop?.address ?? 'Market Square, $cleanCity',
-          'stopType': 'MEAL',
-        },
-        // 5. Afternoon Landmark (02:30 PM - 04:30 PM)
-        {
-          'place': daySights[2],
-          'time': '02:30 PM - 04:30 PM',
-          'period': 'Afternoon Sight ✨',
-          'activity': 'Deep dive into afternoon attractions, nature safari, museum galleries or scenic waterfalls (2 hrs) • 15 mins travel.',
-          'address': 'Outskirts / Reserve, $cleanCity',
-          'stopType': 'VISIT',
-        },
-        // 6. High Tea & Delicacies (04:45 PM - 05:30 PM)
-        {
-          'place': treatName,
-          'time': '04:45 PM - 05:30 PM',
-          'period': 'Local Treats 🫖',
-          'activity': 'Unwind with local sweets, warm snacks (Bajjis, Benne Dosa or Mysore Pak) and fresh beverages (45 mins).',
-          'address': tStop?.address ?? 'Promenade Road, $cleanCity',
-          'stopType': 'BREAK',
-        },
-        // 7. Sunset Viewpoint (05:45 PM - 07:15 PM)
-        {
-          'place': daySights[3],
-          'time': '05:45 PM - 07:15 PM',
-          'period': 'Sunset Viewpoint 🌅',
-          'activity': 'Spectacular golden hour panoramas over the Western Ghats / skyline and lively evening atmosphere (1 hr 30 mins).',
-          'address': 'Lookout Point, near $cleanCity',
-          'stopType': 'VISIT',
-        },
-        // 8. Dinner & Wind Down (07:30 PM - 09:00 PM)
-        {
-          'place': dinnerName,
-          'time': '07:30 PM - 09:00 PM',
-          'period': 'Dinner & Downtime 🌙',
-          'activity': 'Relaxing evening dinner with friends, recap the day\'s highlights, and return to hotel by 09:15 PM for restful sleep.',
-          'address': hotel ?? 'City Center, $cleanCity',
-          'stopType': 'MEAL',
-        },
-      ];
-
-      resultDays.add({
-        'dayNumber': dayNum,
-        'title': dateStr.contains('/') || dateStr.contains('-') ? 'Day $dayNum • $dateStr' : 'Day $dayNum • $dateStr',
-        'date': dateStr,
-        'summary': 'Day $dayNum: ${daySights[0]} & ${daySights[2]}',
-        'activities': activities,
-      });
-    }
-
-    return resultDays;
+    return GroupTripScheduleService.buildMultiDayPlan(
+      destination: destination,
+      numberOfDays: numberOfDays,
+      votedPlaces: selectedPlaces,
+      dateStrings: dateStrings,
+      hotel: hotel,
+      startPoint: startPoint,
+    );
   }
 
   /// Looks up real GPS coordinates for any known curated stop across all Karnataka plans

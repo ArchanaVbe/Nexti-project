@@ -566,13 +566,29 @@ def validate_itinerary(
 
     # Check that all stops were accounted for
     scheduled_pids = set()
+    ignored_pids = {
+        "start_point", "final_stop", "lunch_stop", "dinner_stop",
+        "highway_break", "tea_break", "breakfast_stop", "heritage_walk",
+        "bazaar_explore", "sunset_promenade", "cultural_promenade",
+        "sunset_stroll", "twilight_promenade", "sunset_view", "leisure_explore"
+    }
     for d in days:
         for s in d.get("stops", []):
             pid = s.get("place_id")
-            if pid and pid not in ["start_point", "final_stop", "lunch_stop"]:
+            name = s.get("name")
+            act_type = (s.get("activity_type") or "").lower()
+            if pid and pid not in ignored_pids and act_type not in ["start", "end", "meal", "break", "leisure"]:
                 scheduled_pids.add(pid)
+            if name and act_type not in ["start", "end", "meal", "break", "leisure"]:
+                scheduled_pids.add(name)
 
-    unfitted_pids = {u.get("place_id") for u in unfitted if isinstance(u, dict)}
+    unfitted_pids = set()
+    for u in unfitted:
+        if isinstance(u, dict):
+            if u.get("place_id"):
+                unfitted_pids.add(u["place_id"])
+            if u.get("name"):
+                unfitted_pids.add(u["name"])
 
     missing_pids = set(selected_stops) - scheduled_pids - unfitted_pids
     if missing_pids:

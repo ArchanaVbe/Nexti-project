@@ -23,6 +23,7 @@ import '../widgets/hotel_map_picker.dart';
 import 'google_maps_selection.dart';
 import 'hotel_booking_maps.dart';
 import '../widgets/google_maps_icon.dart';
+import '../widgets/app_logo.dart';
 import '../services/road_routing_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -1319,19 +1320,22 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       _isPlanningTrip = true;
     });
 
-    // Map place names to IDs if available
+    // Map place names to IDs 1-to-1
     List<String> selectedIds = [];
     List<PlaceCard> selectedPlaceCards = [];
-    if (_discoverData != null) {
-      for (var p in _discoverData!.places) {
-        if (allCombinedPlaces.contains(p.name)) {
-          selectedIds.add(p.placeId);
-          selectedPlaceCards.add(p);
-        }
+    for (final name in allCombinedPlaces) {
+      PlaceCard? card;
+      if (_discoverData != null) {
+        try {
+          card = _discoverData!.places.firstWhere((p) => p.name.trim().toLowerCase() == name.trim().toLowerCase());
+        } catch (_) {}
       }
-    }
-    if (selectedIds.isEmpty) {
-      selectedIds = allCombinedPlaces;
+      if (card != null) {
+        selectedIds.add(card.placeId);
+        selectedPlaceCards.add(card);
+      } else {
+        selectedIds.add(name);
+      }
     }
 
     try {
@@ -3286,8 +3290,25 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       );
     }
 
-    // Combine choices from everyone in the group and local selections into a unified set
-    final allCombinedPlaces = <String>{..._groupPlaces, ..._selectedPlaces}.toList();
+    // Combine choices from everyone in the group and local selections into a unified set of strictly voted attractions
+    final allCombinedPlaces = <String>{..._groupPlaces, ..._selectedPlaces}
+        .where((p) {
+          final l = p.trim().toLowerCase();
+          return l.isNotEmpty &&
+              !l.startsWith('day ') &&
+              !l.startsWith('stop_') &&
+              !l.startsWith('local_') &&
+              !l.startsWith('start:') &&
+              l != 'starting point' &&
+              !l.startsWith('location (') &&
+              !l.startsWith('present location') &&
+              !l.contains('taralabalu') &&
+              !l.contains('layout rd') &&
+              !RegExp(r'^\s*\(?\s*-?\d+\.\d+').hasMatch(l) &&
+              !l.endsWith(' hotel') &&
+              !l.endsWith(' resort');
+        })
+        .toList();
     if (allCombinedPlaces.isEmpty) {
       final dest = _destinationController.text.trim();
       final curated = KarnatakaPlacesRegistry.getCuratedAttractions(dest);
@@ -3705,7 +3726,24 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     final storageKey = userEmail.isNotEmpty ? 'saved_trips_$userEmail' : 'saved_trips';
     List<String> savedTrips = prefs.getStringList(storageKey) ?? [];
     
-    final allCombinedPlaces = <String>{..._groupPlaces, ..._selectedPlaces}.toList();
+    final allCombinedPlaces = <String>{..._groupPlaces, ..._selectedPlaces}
+        .where((p) {
+          final l = p.trim().toLowerCase();
+          return l.isNotEmpty &&
+              !l.startsWith('day ') &&
+              !l.startsWith('stop_') &&
+              !l.startsWith('local_') &&
+              !l.startsWith('start:') &&
+              l != 'starting point' &&
+              !l.startsWith('location (') &&
+              !l.startsWith('present location') &&
+              !l.contains('taralabalu') &&
+              !l.contains('layout rd') &&
+              !RegExp(r'^\s*\(?\s*-?\d+\.\d+').hasMatch(l) &&
+              !l.endsWith(' hotel') &&
+              !l.endsWith(' resort');
+        })
+        .toList();
     if (allCombinedPlaces.isEmpty) {
       allCombinedPlaces.addAll(['Mountain Trek', 'Sunset Point', 'Historic Fort']);
     }
@@ -4312,21 +4350,12 @@ class _TripQrModalDialogState extends State<TripQrModalDialog> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.flight_takeoff_rounded, color: Color(0xFF6366F1), size: 18),
-                        SizedBox(width: 6),
-                        Text(
-                          'NextTripia',
-                          style: TextStyle(
-                            color: Color(0xFF0F172A),
-                            fontWeight: FontWeight.w800,
-                            fontSize: 15,
-                            letterSpacing: 0.3,
-                          ),
-                        ),
-                      ],
+                    const AppLogo(
+                      size: 22,
+                      showText: true,
+                      text: 'NextTripia AI',
+                      fontSize: 15,
+                      textColor: Color(0xFF0F172A),
                     ),
                     const SizedBox(height: 12),
                     QrImageView(

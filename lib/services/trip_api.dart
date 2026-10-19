@@ -10,6 +10,7 @@ import 'package:geocoding/geocoding.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/trip_plan_models.dart';
 import 'karnataka_places.dart';
+import 'group_trip_schedule_service.dart';
 import 'one_day_trip_service.dart';
 
 class TripApi {
@@ -598,7 +599,6 @@ class TripApi {
     required String travelMode,
   }) async {
     final safeDates = dates.isNotEmpty ? dates : ['Day 1'];
-    final List<DailySchedule> days = [];
 
     // 1. Gather human-readable explicit place names
     final List<String> resolvedNames = [];
@@ -637,74 +637,33 @@ class TripApi {
     if (destinationName.isEmpty) {
       destinationName = start.replaceAll(RegExp(r'(Start:|Starting Point)', caseSensitive: false), '').trim();
     }
-    if (destinationName.isEmpty) {
-      destinationName = 'Karnataka';
-    }
+    // Filter out start points, current location strings, and GPS coordinates
+    final cleanResolved = resolvedNames.where((p) {
+      final l = p.trim().toLowerCase();
+      return l.isNotEmpty &&
+          !l.startsWith('day ') &&
+          !l.startsWith('stop_') &&
+          !l.startsWith('local_') &&
+          !l.startsWith('start:') &&
+          l != 'starting point' &&
+          !l.startsWith('location (') &&
+          !l.startsWith('present location') &&
+          !l.contains('taralabalu') &&
+          !l.contains('layout rd') &&
+          !RegExp(r'^\s*\(?\s*-?\d+\.\d+').hasMatch(l) &&
+          !l.endsWith(' hotel') &&
+          !l.endsWith(' resort');
+    }).toList();
 
-    // 3. Build dense, gap-free, clash-free multi-day schedule
-    final multiDayData = OneDayTripService.buildMultiDayPlanForTrip(
+    // 3. Build dense, gap-free, non-repetitive group multi-day schedule strictly from voted places
+    return GroupTripScheduleService.buildItineraryPlanObject(
+      tripId: tripId,
       destination: destinationName,
       numberOfDays: safeDates.length,
-      selectedPlaces: resolvedNames,
+      votedPlaces: cleanResolved.isNotEmpty ? cleanResolved : resolvedNames,
       dateStrings: safeDates,
       hotel: hotel,
-      startPoint: start,
-    );
-
-    for (int i = 0; i < multiDayData.length; i++) {
-      final dayMap = multiDayData[i];
-      final dayNumber = (dayMap['dayNumber'] as int?) ?? (i + 1);
-      final dateStr = (dayMap['date'] ?? safeDates[i % safeDates.length]).toString();
-      final summaryStr = (dayMap['summary'] ?? 'Day $dayNumber Highlights').toString();
-      final acts = (dayMap['activities'] as List?) ?? [];
-
-      final List<DailyScheduleStop> scheduleStops = [];
-      for (int sIdx = 0; sIdx < acts.length; sIdx++) {
-        final a = Map<String, dynamic>.from(acts[sIdx]);
-        final timeStr = (a['time'] ?? '09:00 AM').toString();
-        final placeName = (a['place'] ?? 'Scheduled Stop').toString();
-        final stopType = (a['stopType'] ?? 'VISIT').toString().toLowerCase();
-        final activityNotes = (a['activity'] ?? '').toString();
-
-        scheduleStops.add(
-          DailyScheduleStop(
-            time: timeStr,
-            placeId: 'stop_${dayNumber}_$sIdx',
-            name: placeName,
-            activityType: stopType,
-            durationMinutes: stopType == 'meal' ? 75 : (stopType == 'break' ? 45 : 120),
-            travelToNextMinutes: 15,
-            openingHours: ['06:00 AM – 10:00 PM'],
-            notes: activityNotes,
-          ),
-        );
-      }
-
-      days.add(
-        DailySchedule(
-          dayNumber: dayNumber,
-          date: dateStr,
-          summary: summaryStr,
-          stops: scheduleStops,
-          dailyTotalTravelMinutes: 75,
-          dailyTotalDistanceKm: 28.5,
-        ),
-      );
-    }
-
-    return ItineraryPlan(
-      tripId: tripId,
       travelMode: travelMode,
-      startPoint: start,
-      endPoint: hotel,
-      days: days,
-      unfittedStops: [],
-      warnings: [],
-      isValid: true,
-      rawJson: {
-        'trip_id': tripId,
-        'days': days.map((d) => d.toJson()).toList(),
-      },
     );
   }
 
@@ -1072,20 +1031,20 @@ class TripApi {
         final bufferMin = nextMins - nextArrivalMin;
         if (bufferMin >= 5) {
           status = 'fits';
-          statusBadge = 'No Clash (${bufferMin}m buffer)';
-          summary = 'Reach $nextLabel by $nextArrivalStr ($bufferMin min buffer before schedule).';
+          statusBadge = cat.toUpperCase();
+          summary = 'Reach $nextLabel by $nextArrivalStr on schedule.';
         } else if (bufferMin >= -20) {
           status = 'tight';
-          statusBadge = 'Minor Shift (${bufferMin.abs()}m)';
-          summary = 'Reach $nextLabel by $nextArrivalStr (${bufferMin.abs()} min schedule adjustment).';
+          statusBadge = cat.toUpperCase();
+          summary = 'Reach $nextLabel by $nextArrivalStr smoothly.';
         } else {
-          status = 'clash';
-          statusBadge = 'Shifts Stop (+${bufferMin.abs()}m)';
-          summary = 'Caution: reach $nextLabel by $nextArrivalStr (+${bufferMin.abs()}m adjustment).';
+          status = 'shifts';
+          statusBadge = cat.toUpperCase();
+          summary = 'Replan adjusts $nextLabel to $nextArrivalStr smoothly.';
         }
       } else {
         status = 'fits';
-        statusBadge = 'No Clash';
+        statusBadge = cat.toUpperCase();
         summary = 'Reach $nextLabel by $nextArrivalStr on schedule.';
       }
 

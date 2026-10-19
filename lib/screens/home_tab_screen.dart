@@ -8,6 +8,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'one_day_trip_plan_screen.dart';
 import 'create_trip_screen.dart';
 import '../qr_scanner_screen.dart';
+import '../widgets/app_logo.dart';
 
 class HomeTabScreen extends StatefulWidget {
   final void Function(int index)? onNavigateTab;
@@ -622,27 +623,12 @@ class _HomeTabScreenState extends State<HomeTabScreen> {
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         // App Logo & Name
-        Row(
-          children: [
-            Transform.rotate(
-              angle: -0.4,
-              child: const Icon(
-                Icons.send_rounded,
-                color: Color(0xFF6366F1),
-                size: 26,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              'NextTripia AI',
-              style: TextStyle(
-                fontSize: 21,
-                fontWeight: FontWeight.w800,
-                color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
-                letterSpacing: -0.4,
-              ),
-            ),
-          ],
+        AppLogo(
+          size: 32,
+          showText: true,
+          text: 'NextTripia AI',
+          fontSize: 21,
+          textColor: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF1E1B4B),
         ),
         // Action Icons: Notifications & Profile Avatar
         Row(

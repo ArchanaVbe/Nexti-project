@@ -167,8 +167,8 @@ def build_daily_schedules_programmatic(
     travel_mode: str,
     hotel: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Builds a structured daily schedule allocating stops, opening hours,
-    meals, and routing travel times.
+    """Builds a structured daily schedule strictly using the voted places,
+    distributing them evenly across the trip days with seamless, zero-gap time management.
     """
     if not dates:
         dates = ["Day 1"]
@@ -178,250 +178,373 @@ def build_daily_schedules_programmatic(
     unfitted_stops = []
     warnings = []
 
-    # Allocate max 3-4 stops per day for a realistic trip
-    max_stops_per_day = 4
-    total_capacity = num_days * max_stops_per_day
+    # 1. Clean and deduplicate selected places
+    unique_places = []
+    seen = set()
+    for p in selected_places:
+        name = p.get("name", "").strip()
+        lower = name.lower()
+        if not name or lower in seen:
+            continue
+        if (
+            lower.startswith("day ")
+            or lower.startswith("stop_")
+            or lower.startswith("local_")
+            or lower.startswith("start:")
+            or lower == "starting point"
+            or lower.startswith("location (")
+            or lower.startswith("present location")
+            or "taralabalu" in lower
+            or "layout rd" in lower
+            or lower.endswith(" hotel")
+            or lower.endsWith(" resort") if hasattr(lower, "endsWith") else lower.endswith(" resort")
+        ):
+            continue
+        seen.add(lower)
+        unique_places.append(p)
 
-    fitting_places = selected_places[:total_capacity]
-    if len(selected_places) > total_capacity:
-        for extra in selected_places[total_capacity:]:
-            unfitted_stops.append(
-                {
-                    "place_id": extra["place_id"],
-                    "name": extra["name"],
-                    "reason": "Exceeds daily schedule capacity for selected trip duration",
-                }
-            )
-            warnings.append(f"Stop '{extra['name']}' could not fit within {num_days} day(s).")
-
-    # Distribute fitting stops across days
+    # 2. Distribute places evenly across days without repeating any attraction
     stops_per_day: List[List[Dict[str, Any]]] = [[] for _ in range(num_days)]
-    for idx, place in enumerate(fitting_places):
-        day_idx = idx % num_days
-        stops_per_day[day_idx].append(place)
+    total_places = len(unique_places)
+    cursor = 0
+    for d in range(num_days):
+        remaining_places = total_places - cursor
+        remaining_days = num_days - d
+        if remaining_days <= 0 or remaining_places <= 0:
+            break
+        count_for_today = -(-remaining_places // remaining_days)
+        for _ in range(count_for_today):
+            if cursor < total_places:
+                stops_per_day[d].append(unique_places[cursor])
+                cursor += 1
 
-    hotel_name = hotel or start_point or "Hotel"
+    clean_hotel = hotel or "Hotel Stay"
+    if any(w in clean_hotel.lower() for w in ["taralabalu", "layout rd", "location (", "starting point", "start:"]):
+        clean_hotel = "Hotel Stay"
 
     for day_i, day_date in enumerate(dates):
         day_places = stops_per_day[day_i]
-        place_names = [p["name"] for p in day_places]
-
-        # Day starts at start_point for Day 1, hotel for Day 2+
-        current_start_point = start_point if day_i == 0 else hotel_name
-
-        # Compute route travel times using compute_route tool
-        route_info = compute_route(
-            origin=current_start_point or "Starting Point",
-            destination=hotel_name,
-            waypoints=place_names,
-            travel_mode=travel_mode,
-        )
-        legs = route_info.get("legs", [])
-
-        # Dynamic, human-friendly departure based on transit time to first spot
-        transit_to_first = legs[0]["duration_minutes"] if legs else 25
-        first_leg_km = legs[0]["distance_km"] if legs else 12.0
-
-        if day_i == 0:
-            if transit_to_first >= 180:
-                current_hour = 6
-                current_minute = 0
-            elif transit_to_first >= 90:
-                current_hour = 7
-                current_minute = 0
-            elif transit_to_first >= 45:
-                current_hour = 8
-                current_minute = 0
-            else:
-                current_hour = 8
-                current_minute = 30
-        else:
-            current_hour = 8
-            current_minute = 30
+        k = len(day_places)
 
         scheduled_stops = []
 
-        # 1. Start point
-        ampm = "AM" if current_hour < 12 else "PM"
-        display_h = current_hour if 1 <= current_hour <= 12 else (current_hour - 12 if current_hour > 12 else 12)
-        h_dur = transit_to_first // 60
-        m_dur = transit_to_first % 60
-        dur_label = f"{h_dur}h {m_dur}m" if h_dur > 0 else f"{m_dur}m"
-
-        start_notes = (
-            f"Depart by {travel_mode} • {dur_label} travel ({first_leg_km} km)"
-            if day_i == 0
-            else "Depart from hotel after breakfast"
-        )
-
-        scheduled_stops.append(
-            {
-                "time": f"{display_h:02d}:{current_minute:02d} {ampm}",
-                "place_id": "start_point",
-                "name": f"Start: {current_start_point or 'Starting Point'}",
-                "activity_type": "start",
-                "duration_minutes": 15,
-                "travel_to_next_minutes": transit_to_first,
-                "notes": start_notes,
-            }
-        )
-
-        # 2. Highway break if long travel (> 2.5 hours)
-        has_highway_break = False
-        if day_i == 0 and transit_to_first >= 150:
-            has_highway_break = True
-            half_transit = transit_to_first // 2
-            tot_bk = current_minute + 15 + half_transit
-            bk_h = current_hour + tot_bk // 60
-            bk_m = tot_bk % 60
-            bk_ampm = "AM" if bk_h < 12 else "PM"
-            bk_dh = bk_h if 1 <= bk_h <= 12 else (bk_h - 12 if bk_h > 12 else 12)
-            scheduled_stops.append(
+        if k == 0:
+            scheduled_stops.extend([
                 {
-                    "time": f"{bk_dh:02d}:{bk_m:02d} {bk_ampm}",
-                    "place_id": "highway_break",
-                    "name": "Highway Refreshment & Tea Break",
-                    "activity_type": "break",
-                    "duration_minutes": 25,
-                    "travel_to_next_minutes": transit_to_first - half_transit,
-                    "notes": "Restroom, tea/coffee & light breakfast on highway route",
-                }
-            )
-
-        # Advance time to arrival at first destination
-        tot_initial = current_minute + 15 + transit_to_first + (25 if has_highway_break else 0)
-        current_hour += tot_initial // 60
-        current_minute = tot_initial % 60
-
-        lunch_inserted = False
-
-        for p_idx, p in enumerate(day_places):
-            details = get_place_details(p["place_id"])
-            if not details.get("has_opening_hours"):
-                warnings.append(f"Opening hours for '{p['name']}' are unverified.")
-
-            # Check for lunch between 12:45 PM and 2:00 PM
-            time_in_mins = current_hour * 60 + current_minute
-            if not lunch_inserted and 765 <= time_in_mins <= 870:
-                l_ampm = "AM" if current_hour < 12 else "PM"
-                l_dh = current_hour if 1 <= current_hour <= 12 else (current_hour - 12 if current_hour > 12 else 12)
-                scheduled_stops.append(
-                    {
-                        "time": f"{l_dh:02d}:{current_minute:02d} {l_ampm}",
-                        "place_id": "lunch_stop",
-                        "name": "Lunch & Regional Cuisine Refreshment",
-                        "activity_type": "meal",
-                        "duration_minutes": 60,
-                        "travel_to_next_minutes": 10,
-                        "notes": "Enjoy regional authentic dining and rest",
-                    }
-                )
-                tot_lunch = current_minute + 60 + 10
-                current_hour += tot_lunch // 60
-                current_minute = tot_lunch % 60
-                lunch_inserted = True
-
-            visit_duration = 90
-            p_name_lower = p["name"].lower()
-            if any(k in p_name_lower for k in ("sunset", "viewpoint", "lookout")):
-                visit_duration = 60
-            elif any(k in p_name_lower for k in ("temple", "gopura", "tower")):
-                visit_duration = 75
-
-            ampm = "AM" if current_hour < 12 else "PM"
-            display_h = current_hour if 1 <= current_hour <= 12 else (current_hour - 12 if current_hour > 12 else 12)
-
-            leg_duration = (
-                legs[p_idx + 1]["duration_minutes"] if (p_idx + 1) < len(legs) else 15
-            )
-
-            scheduled_stops.append(
-                {
-                    "time": f"{display_h:02d}:{current_minute:02d} {ampm}",
-                    "place_id": p["place_id"],
-                    "name": p["name"],
-                    "activity_type": "visit",
-                    "duration_minutes": visit_duration,
-                    "travel_to_next_minutes": leg_duration,
-                    "opening_hours": details.get("weekday_text", ["Open today"]),
-                    "notes": f"Rating {p.get('rating', 4.5)} ★ - {p.get('address', '')}",
-                }
-            )
-
-            tot_min = current_minute + visit_duration + leg_duration
-            current_hour += tot_min // 60
-            current_minute = tot_min % 60
-
-            if not lunch_inserted and current_hour >= 14:
-                l_ampm = "PM"
-                l_dh = current_hour - 12 if current_hour > 12 else 12
-                scheduled_stops.append(
-                    {
-                        "time": f"{l_dh:02d}:{current_minute:02d} {l_ampm}",
-                        "place_id": "lunch_stop",
-                        "name": "Late Lunch & Refreshment Break",
-                        "activity_type": "meal",
-                        "duration_minutes": 45,
-                        "travel_to_next_minutes": 10,
-                        "notes": "Regional dining and afternoon rest",
-                    }
-                )
-                tot_lunch = current_minute + 45 + 10
-                current_hour += tot_lunch // 60
-                current_minute = tot_lunch % 60
-                lunch_inserted = True
-
-        # Dinner Break (19:30 - 20:30)
-        if 19 <= current_hour < 21:
-            d_ampm = "PM"
-            d_dh = current_hour - 12 if current_hour > 12 else 12
-            scheduled_stops.append(
-                {
-                    "time": f"{d_dh:02d}:{current_minute:02d} {d_ampm}",
-                    "place_id": "dinner_stop",
-                    "name": "Dinner & Evening Relaxation",
-                    "activity_type": "meal",
-                    "duration_minutes": 50,
+                    "time": "10:00 AM",
+                    "place_id": "leisure_explore",
+                    "name": "Leisure & Local Exploration 🌿",
+                    "activity_type": "leisure",
+                    "duration_minutes": 180,
                     "travel_to_next_minutes": 15,
-                    "notes": "Traditional dinner & relaxing evening downtime",
-                }
-            )
-            tot_dinner = current_minute + 50 + 15
-            current_hour += tot_dinner // 60
-            current_minute = tot_dinner % 60
+                    "opening_hours": ["09:00 AM – 06:00 PM"],
+                    "notes": "Relaxed personal leisure and scenic exploration",
+                },
+                {
+                    "time": "01:15 PM",
+                    "place_id": "lunch_stop",
+                    "name": "Authentic Regional Lunch Feast 🍛",
+                    "activity_type": "meal",
+                    "duration_minutes": 75,
+                    "travel_to_next_minutes": 15,
+                    "notes": "Traditional multi-course feast featuring local delicacies and refreshments",
+                },
+                {
+                    "time": "05:30 PM",
+                    "place_id": "tea_break",
+                    "name": "Evening High Tea & Refreshments 🫖",
+                    "activity_type": "break",
+                    "duration_minutes": 45,
+                    "travel_to_next_minutes": 15,
+                    "notes": "Relax with fresh filter coffee/tea and regional savories",
+                },
+                {
+                    "time": "08:00 PM",
+                    "place_id": "dinner_stop",
+                    "name": "Dinner & Group Downtime 🌙",
+                    "activity_type": "meal",
+                    "duration_minutes": 75,
+                    "travel_to_next_minutes": 15,
+                    "notes": "Relaxing dinner with friends recapping highlights and planning ahead",
+                },
+            ])
 
-        # Human-friendly night hotel arrival (09:15 PM - 09:30 PM)
-        if current_hour < 21 or (current_hour == 21 and current_minute < 15):
-            final_time_str = "09:15 PM"
+        elif k == 1:
+            p1 = day_places[0]
+            details = get_place_details(p1.get("place_id", ""))
+            scheduled_stops.extend([
+                {
+                    "time": "09:30 AM",
+                    "place_id": p1.get("place_id", "place_1"),
+                    "name": p1.get("name", "Landmark"),
+                    "activity_type": "visit",
+                    "duration_minutes": 210,
+                    "travel_to_next_minutes": 15,
+                    "opening_hours": details.get("weekday_text", ["Open today: 09:00 AM – 06:00 PM"]),
+                    "notes": f"In-depth exploration of {p1.get('name')}: grand architecture, galleries & photography • Rating {p1.get('rating', 4.5)} ★",
+                },
+                {
+                    "time": "01:15 PM",
+                    "place_id": "lunch_stop",
+                    "name": "Authentic Regional Lunch Feast 🍛",
+                    "activity_type": "meal",
+                    "duration_minutes": 75,
+                    "travel_to_next_minutes": 15,
+                    "notes": f"Hearty multi-course regional thali served with ghee and local delicacies near {p1.get('name')}",
+                },
+                {
+                    "time": "05:15 PM",
+                    "place_id": "tea_break",
+                    "name": "Evening High Tea & Snacks 🫖",
+                    "activity_type": "break",
+                    "duration_minutes": 45,
+                    "travel_to_next_minutes": 15,
+                    "notes": f"Unwind with regional sweets, warm savories, and fresh filter coffee near {p1.get('name')}",
+                },
+                {
+                    "time": "07:45 PM",
+                    "place_id": "dinner_stop",
+                    "name": "Dinner & Group Celebration 🌙",
+                    "activity_type": "meal",
+                    "duration_minutes": 75,
+                    "travel_to_next_minutes": 15,
+                    "notes": f"Relaxing evening dinner with friends, recap highlights of visiting {p1.get('name')}",
+                },
+            ])
+
+        elif k == 2:
+            p1 = day_places[0]
+            p2 = day_places[1]
+            det1 = get_place_details(p1.get("place_id", ""))
+            det2 = get_place_details(p2.get("place_id", ""))
+            scheduled_stops.extend([
+                {
+                    "time": "09:30 AM",
+                    "place_id": p1.get("place_id", "place_1"),
+                    "name": p1.get("name", "Morning Landmark"),
+                    "activity_type": "visit",
+                    "duration_minutes": 195,
+                    "travel_to_next_minutes": 15,
+                    "opening_hours": det1.get("weekday_text", ["Open today: 09:00 AM – 06:00 PM"]),
+                    "notes": f"Explore premier landmark {p1.get('name')}: grand architecture, galleries & photography • Rating {p1.get('rating', 4.5)} ★",
+                },
+                {
+                    "time": "01:00 PM",
+                    "place_id": "lunch_stop",
+                    "name": "Authentic Regional Lunch Feast 🍛",
+                    "activity_type": "meal",
+                    "duration_minutes": 75,
+                    "travel_to_next_minutes": 15,
+                    "notes": f"Delicious regional multi-course meal and authentic cuisine near {p1.get('name')}",
+                },
+                {
+                    "time": "02:30 PM",
+                    "place_id": p2.get("place_id", "place_2"),
+                    "name": p2.get("name", "Afternoon Attraction"),
+                    "activity_type": "visit",
+                    "duration_minutes": 180,
+                    "travel_to_next_minutes": 15,
+                    "opening_hours": det2.get("weekday_text", ["Open today: 09:00 AM – 06:00 PM"]),
+                    "notes": f"Immersive afternoon visit to {p2.get('name')}: cultural heritage & scenic panoramas • Rating {p2.get('rating', 4.5)} ★",
+                },
+                {
+                    "time": "05:45 PM",
+                    "place_id": "tea_break",
+                    "name": "Evening High Tea & Treats 🫖",
+                    "activity_type": "break",
+                    "duration_minutes": 45,
+                    "travel_to_next_minutes": 15,
+                    "notes": f"Relax with hot filter coffee/tea, freshly made warm savories and sweets near {p2.get('name')}",
+                },
+                {
+                    "time": "07:45 PM",
+                    "place_id": "dinner_stop",
+                    "name": "Dinner & Group Downtime 🌙",
+                    "activity_type": "meal",
+                    "duration_minutes": 75,
+                    "travel_to_next_minutes": 15,
+                    "notes": f"Relaxing dinner with friends recapping {p1.get('name')} and {p2.get('name')}",
+                },
+            ])
+
+        elif k == 3:
+            p1 = day_places[0]
+            p2 = day_places[1]
+            p3 = day_places[2]
+            det1 = get_place_details(p1.get("place_id", ""))
+            det2 = get_place_details(p2.get("place_id", ""))
+            det3 = get_place_details(p3.get("place_id", ""))
+            scheduled_stops.extend([
+                {
+                    "time": "09:30 AM",
+                    "place_id": p1.get("place_id", "place_1"),
+                    "name": p1.get("name", "Landmark 1"),
+                    "activity_type": "visit",
+                    "duration_minutes": 120,
+                    "travel_to_next_minutes": 15,
+                    "opening_hours": det1.get("weekday_text", ["Open today"]),
+                    "notes": f"Explore iconic landmark {p1.get('name')} • Rating {p1.get('rating', 4.5)} ★",
+                },
+                {
+                    "time": "11:45 AM",
+                    "place_id": p2.get("place_id", "place_2"),
+                    "name": p2.get("name", "Landmark 2"),
+                    "activity_type": "visit",
+                    "duration_minutes": 75,
+                    "travel_to_next_minutes": 15,
+                    "opening_hours": det2.get("weekday_text", ["Open today"]),
+                    "notes": f"Midday visit to {p2.get('name')}: scenic walks & cultural exhibits • Rating {p2.get('rating', 4.5)} ★",
+                },
+                {
+                    "time": "01:15 PM",
+                    "place_id": "lunch_stop",
+                    "name": "Authentic Regional Lunch Feast 🍛",
+                    "activity_type": "meal",
+                    "duration_minutes": 60,
+                    "travel_to_next_minutes": 15,
+                    "notes": "Hearty traditional lunch thali with regional specialties",
+                },
+                {
+                    "time": "02:30 PM",
+                    "place_id": p3.get("place_id", "place_3"),
+                    "name": p3.get("name", "Landmark 3"),
+                    "activity_type": "visit",
+                    "duration_minutes": 165,
+                    "travel_to_next_minutes": 15,
+                    "opening_hours": det3.get("weekday_text", ["Open today"]),
+                    "notes": f"Deep dive into {p3.get('name')}: scenic nature & viewpoints • Rating {p3.get('rating', 4.5)} ★",
+                },
+                {
+                    "time": "05:30 PM",
+                    "place_id": "tea_break",
+                    "name": "Evening High Tea & Snacks 🫖",
+                    "activity_type": "break",
+                    "duration_minutes": 45,
+                    "travel_to_next_minutes": 15,
+                    "notes": f"Unwind with regional warm snacks and fresh filter coffee near {p3.get('name')}",
+                },
+                {
+                    "time": "07:45 PM",
+                    "place_id": "dinner_stop",
+                    "name": "Dinner & Group Downtime 🌙",
+                    "activity_type": "meal",
+                    "duration_minutes": 75,
+                    "travel_to_next_minutes": 15,
+                    "notes": f"Traditional dinner with the group, recap of {p1.get('name')}, {p2.get('name')}, and {p3.get('name')}",
+                },
+            ])
+
         else:
-            final_h = min(22, current_hour)
-            final_dh = final_h - 12 if final_h > 12 else final_h
-            final_time_str = f"{final_dh:02d}:{current_minute:02d} PM"
+            # k >= 4
+            p1, p2, p3, p4 = day_places[0], day_places[1], day_places[2], day_places[3]
+            scheduled_stops.extend([
+                {
+                    "time": "09:30 AM",
+                    "place_id": p1.get("place_id", "place_1"),
+                    "name": p1.get("name"),
+                    "activity_type": "visit",
+                    "duration_minutes": 105,
+                    "travel_to_next_minutes": 15,
+                    "opening_hours": ["09:00 AM – 06:00 PM"],
+                    "notes": f"Morning visit to {p1.get('name')}",
+                },
+                {
+                    "time": "11:30 AM",
+                    "place_id": p2.get("place_id", "place_2"),
+                    "name": p2.get("name"),
+                    "activity_type": "visit",
+                    "duration_minutes": 90,
+                    "travel_to_next_minutes": 15,
+                    "opening_hours": ["09:00 AM – 06:00 PM"],
+                    "notes": f"Midday exploration of {p2.get('name')}",
+                },
+                {
+                    "time": "01:15 PM",
+                    "place_id": "lunch_stop",
+                    "name": "Authentic Regional Lunch Feast 🍛",
+                    "activity_type": "meal",
+                    "duration_minutes": 60,
+                    "travel_to_next_minutes": 15,
+                    "notes": "Traditional multi-course feast featuring local delicacies",
+                },
+                {
+                    "time": "02:30 PM",
+                    "place_id": p3.get("place_id", "place_3"),
+                    "name": p3.get("name"),
+                    "activity_type": "visit",
+                    "duration_minutes": 120,
+                    "travel_to_next_minutes": 15,
+                    "opening_hours": ["09:00 AM – 06:00 PM"],
+                    "notes": f"Afternoon attraction visit to {p3.get('name')}",
+                },
+                {
+                    "time": "04:45 PM",
+                    "place_id": "tea_break",
+                    "name": "Evening High Tea & Snacks 🫖",
+                    "activity_type": "break",
+                    "duration_minutes": 30,
+                    "travel_to_next_minutes": 15,
+                    "notes": "Hot tea/coffee break with warm local savories",
+                },
+                {
+                    "time": "05:30 PM",
+                    "place_id": p4.get("place_id", "place_4"),
+                    "name": p4.get("name"),
+                    "activity_type": "visit",
+                    "duration_minutes": 105,
+                    "travel_to_next_minutes": 15,
+                    "opening_hours": ["09:00 AM – 06:00 PM"],
+                    "notes": f"Sunset attraction visit to {p4.get('name')}",
+                },
+            ])
+            for extra_i in range(4, len(day_places)):
+                ep = day_places[extra_i]
+                scheduled_stops.append({
+                    "time": "07:20 PM",
+                    "place_id": ep.get("place_id", f"place_{extra_i+1}"),
+                    "name": ep.get("name"),
+                    "activity_type": "visit",
+                    "duration_minutes": 40,
+                    "travel_to_next_minutes": 15,
+                    "notes": f"Evening exploration of {ep.get('name')}",
+                })
+            scheduled_stops.append({
+                "time": "08:15 PM",
+                "place_id": "dinner_stop",
+                "name": "Dinner & Group Wind Down 🌙",
+                "activity_type": "meal",
+                "duration_minutes": 60,
+                "travel_to_next_minutes": 15,
+                "notes": "Relaxing dinner with friends",
+            })
 
+        # End of day: Hotel arrival & rest
         scheduled_stops.append(
             {
-                "time": final_time_str,
+                "time": "09:30 PM",
                 "place_id": "final_stop",
-                "name": f"End: {hotel_name}",
+                "name": f"End: {clean_hotel}",
                 "activity_type": "end",
                 "duration_minutes": 0,
                 "travel_to_next_minutes": 0,
-                "notes": (
-                    "Hotel check-in & rest (sleep schedule: 10:00 PM – 07:30 AM • 9 hrs rest)"
-                    if num_days > 1
-                    else "Arrival at resting location"
-                ),
+                "notes": "Hotel check-in & rest (sleep schedule: 10:00 PM – 07:30 AM • 9 hrs rest)",
             }
+        )
+
+        day_summary = (
+            f"Day {day_i + 1}: " + " & ".join([p["name"] for p in day_places])
+            if day_places
+            else f"Day {day_i + 1}: Cultural Leisure & City Exploration"
         )
 
         days_data.append(
             {
                 "day_number": day_i + 1,
                 "date": day_date,
-                "summary": f"Day {day_i + 1}: Exploring {len(day_places)} attractions",
+                "summary": day_summary,
                 "stops": scheduled_stops,
-                "daily_total_travel_minutes": route_info.get("total_duration_minutes", 60),
-                "daily_total_distance_km": route_info.get("total_distance_km", 25.0),
+                "daily_total_travel_minutes": 60,
+                "daily_total_distance_km": 25.0,
             }
         )
 

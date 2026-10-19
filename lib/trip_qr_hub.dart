@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'trip_qr_screen.dart';
 import 'qr_scanner_screen.dart';
+import 'widgets/app_logo.dart';
 
 class TripQrHub extends StatefulWidget {
   const TripQrHub({super.key});
@@ -72,11 +73,12 @@ class _TripQrHubState extends State<TripQrHub> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.qr_code_2_rounded, size: 70, color: Colors.black87),
-              const SizedBox(height: 16),
-              const Text(
-                'NextTripia QR Hub',
-                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+              const AppLogo(
+                size: 60,
+                showText: true,
+                text: 'NextTripia QR Hub',
+                fontSize: 22,
+                spacing: 12,
               ),
               const SizedBox(height: 8),
               const Text(

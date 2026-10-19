@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'services/presence_service.dart';
 import 'services/trip_invite_service.dart';
 import 'widgets/google_logo.dart';
+import 'widgets/app_logo.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -381,30 +382,12 @@ class _LoginScreenState extends State<LoginScreen> {
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
                     const SizedBox(height: 28),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: Image.asset(
-                            'assets/images/app_icon.png',
-                            width: 32,
-                            height: 32,
-                            fit: BoxFit.contain,
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        const Text(
-                          'NextTripia AI',
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: -0.3,
-                            color: Color(0xFF1E1B4B),
-                          ),
-                        ),
-                      ],
+                    const AppLogo(
+                      size: 34,
+                      showText: true,
+                      text: 'NextTripia AI',
+                      fontSize: 20,
+                      textColor: Color(0xFF1E1B4B),
                     ),
                     const SizedBox(height: 20),
                     const Text(

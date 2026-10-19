@@ -7,6 +7,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:image/image.dart' as img;
+import 'widgets/app_logo.dart';
 
 class TripQrScreen extends StatefulWidget {
   final String tripId;
@@ -158,6 +159,14 @@ class _TripQrScreenState extends State<TripQrScreen> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      const AppLogo(
+                        size: 24,
+                        showText: true,
+                        text: 'NextTripia AI',
+                        fontSize: 15,
+                        textColor: Color(0xFF0F172A),
+                      ),
+                      const SizedBox(height: 14),
                       QrImageView(
                         data: qrPayload,
                         version: QrVersions.auto,
