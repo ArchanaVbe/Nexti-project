@@ -1,4 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'services/presence_service.dart';
+import 'services/trip_invite_service.dart';
+import 'widgets/google_logo.dart';
+import 'widgets/app_logo.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -8,12 +16,617 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final GoogleSignIn _googleSignIn = GoogleSignIn();
+
+  bool _obscurePassword = true;
+  bool _isLoading = false;
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  // Helper to persist user profile, local preferences, and atomically increment login count
+  Future<void> _storeUserData(User user, String authProvider) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (user.email != null && user.email!.isNotEmpty) {
+        await prefs.setString('user_profile_email', user.email!.trim().toLowerCase());
+      }
+      if (user.displayName != null && user.displayName!.isNotEmpty) {
+        await prefs.setString('user_profile_name', user.displayName!);
+      }
+    } catch (_) {}
+
+    final userDoc = _firestore.collection('users').doc(user.uid);
+    await userDoc.set({
+      'uid': user.uid,
+      'email': user.email,
+      'displayName': user.displayName ?? '',
+      'photoUrl': user.photoURL ?? '',
+      'authProvider': authProvider,
+      'lastLogin': FieldValue.serverTimestamp(),
+      'loginCount': FieldValue.increment(1), // Increment total sign-in counter
+    }, SetOptions(merge: true));
+  }
+
+  // Central post-auth coordinator for presence and QR invite redirection
+  Future<void> _onLoginSuccess(User user) async {
+    // 1. Activate socket heartbeat presence tracking
+    PresenceService.trackUserPresence(user.uid);
+
+    // 2. Check if user opened the app through an external QR code invite while logged out
+    final joinedPendingTrip = await TripInviteService.completePendingInviteIfAny(context, user);
+
+    if (!joinedPendingTrip && mounted) {
+      setState(() => _isLoading = false);
+      Navigator.pushReplacementNamed(context, '/home');
+    }
+  }
+
+  // 1. Email & Password Sign In
+  Future<void> _handleEmailLogin() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _isLoading = true);
+    try {
+      final credential = await _auth.signInWithEmailAndPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+      );
+
+      if (credential.user != null) {
+        await _storeUserData(credential.user!, 'email_password');
+        await _onLoginSuccess(credential.user!);
+      }
+    } on FirebaseAuthException catch (e) {
+      if (mounted) setState(() => _isLoading = false);
+      String message = 'Authentication failed.';
+      if (e.code == 'user-not-found') {
+        message = 'No user found for that email. Please sign up.';
+      } else if (e.code == 'wrong-password' || e.code == 'invalid-credential') {
+        message = 'Incorrect password. Try again.';
+      } else {
+        message = e.message ?? message;
+      }
+      _showErrorSnackBar(message);
+    } catch (e) {
+      if (mounted) setState(() => _isLoading = false);
+      _showErrorSnackBar('An error occurred. Please try again.');
+    }
+  }
+
+  // 2. Google Sign-In
+  Future<void> _handleGoogleLogin() async {
+    setState(() => _isLoading = true);
+    try {
+      // 1. Clear previous session cache so account chooser dialog displays every time
+      await _googleSignIn.signOut();
+
+      // 2. Prompt user with the Google account chooser bottom sheet
+      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+      if (googleUser == null) {
+        // User closed or canceled account selection
+        if (mounted) setState(() => _isLoading = false);
+        return;
+      }
+
+      // 3. Extract authentication tokens from selected Google account
+      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+      final AuthCredential credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+
+      // 4. Authenticate with Firebase
+      final UserCredential userCredential = await _auth.signInWithCredential(credential);
+      if (userCredential.user != null) {
+        await _storeUserData(userCredential.user!, 'google');
+        await _onLoginSuccess(userCredential.user!);
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isLoading = false);
+      _showErrorSnackBar('Google Sign-In failed: $e');
+    }
+  }
+
+  // 3. Forgot Password Handler
+  void _handleForgotPassword() {
+    final resetController = TextEditingController(text: _emailController.text.trim());
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Reset Password'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Enter your email address to receive a password reset link.',
+              style: TextStyle(fontSize: 13, color: Colors.black87),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: resetController,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(
+                hintText: 'Enter your email',
+                prefixIcon: Icon(Icons.email_outlined),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.black,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () async {
+              final email = resetController.text.trim();
+
+              if (email.isEmpty || !email.contains('@') || !email.contains('.')) {
+                _showErrorSnackBar('Please enter a valid email address.');
+                return;
+              }
+
+              Navigator.pop(ctx);
+
+              try {
+                await _auth.sendPasswordResetEmail(email: email);
+                _showSuccessSnackBar('Password reset link sent! Check your inbox and spam folder.');
+              } on FirebaseAuthException catch (e) {
+                String errorMsg = 'Failed to send reset email.';
+                if (e.code == 'user-not-found') {
+                  errorMsg = 'No user found with this email address.';
+                } else if (e.code == 'invalid-email') {
+                  errorMsg = 'Invalid email address format.';
+                } else {
+                  errorMsg = e.message ?? errorMsg;
+                }
+                _showErrorSnackBar(errorMsg);
+              } catch (e) {
+                _showErrorSnackBar('An error occurred. Please try again.');
+              }
+            },
+            child: const Text('Send Link'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 4. Sign-Up Dialog & Account Creation
+  void _handleSignUp() {
+    final signUpEmailController = TextEditingController();
+    final signUpPasswordController = TextEditingController();
+    final signUpFormKey = GlobalKey<FormState>();
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(
+          left: 24,
+          right: 24,
+          top: 24,
+          bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+        ),
+        child: Form(
+          key: signUpFormKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Create NextTripia Account',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: signUpEmailController,
+                keyboardType: TextInputType.emailAddress,
+                decoration: const InputDecoration(
+                  labelText: 'Email',
+                  prefixIcon: Icon(Icons.email_outlined),
+                ),
+                validator: (val) =>
+                    (val == null || !val.contains('@')) ? 'Enter a valid email' : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: signUpPasswordController,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'Password (min 6 chars)',
+                  prefixIcon: Icon(Icons.lock_outline_rounded),
+                ),
+                validator: (val) =>
+                    (val == null || val.length < 6) ? 'Minimum 6 characters required' : null,
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.black,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: () async {
+                    if (!signUpFormKey.currentState!.validate()) return;
+                    Navigator.pop(ctx);
+                    setState(() => _isLoading = true);
+                    try {
+                      final cred = await _auth.createUserWithEmailAndPassword(
+                        email: signUpEmailController.text.trim(),
+                        password: signUpPasswordController.text,
+                      );
+                      if (cred.user != null) {
+                        await _storeUserData(cred.user!, 'email_password');
+                        await _onLoginSuccess(cred.user!);
+                      }
+                    } on FirebaseAuthException catch (e) {
+                      if (mounted) setState(() => _isLoading = false);
+                      _showErrorSnackBar(e.message ?? 'Sign up failed.');
+                    } catch (e) {
+                      if (mounted) setState(() => _isLoading = false);
+                      _showErrorSnackBar('Sign up failed: $e');
+                    }
+                  },
+                  child: const Text('Register & Sign In'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showErrorSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.red.shade700),
+    );
+  }
+
+  void _showSuccessSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.green.shade700),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Login')),
-      body: const Center(
-        child: Text('Login Screen Base'),
+      backgroundColor: Colors.white,
+      resizeToAvoidBottomInset: false,
+      body: Stack(
+        children: [
+          // 1. Background image
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            height: size.height * 0.68,
+            child: Image.asset(
+              'assets/images/travel_bg.jpeg',
+              fit: BoxFit.cover,
+              alignment: const Alignment(0, -0.2),
+              errorBuilder: (context, error, stackTrace) {
+                return Container(
+                  color: Colors.grey.shade200,
+                  alignment: Alignment.center,
+                  child: const Text(
+                    'Missing assets/images/travel_bg.jpeg',
+                    style: TextStyle(color: Colors.red),
+                  ),
+                );
+              },
+            ),
+          ),
+
+          // 2. Linear Gradient Overlay
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            height: size.height * 0.78,
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.white,
+                    Colors.white,
+                    Colors.white.withValues(alpha: 0.96),
+                    Colors.white.withValues(alpha: 0.90),
+                    Colors.white.withValues(alpha: 0.65),
+                    Colors.white.withValues(alpha: 0.20),
+                    Colors.transparent,
+                  ],
+                  stops: const [0.0, 0.35, 0.55, 0.72, 0.84, 0.93, 1.0],
+                ),
+              ),
+            ),
+          ),
+
+          // 3. Content Form
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 28.0),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    const SizedBox(height: 28),
+                    const AppLogo(
+                      size: 34,
+                      showText: true,
+                      text: 'NextTripia AI',
+                      fontSize: 20,
+                      textColor: Color(0xFF1E1B4B),
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'Plan Your Adventure!',
+                      style: TextStyle(
+                        fontSize: 27,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -0.5,
+                        color: Colors.black87,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Welcome to NextTripia. Sign in to get started.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        color: Colors.black54,
+                        fontWeight: FontWeight.w400,
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+
+                    // Log in with Google
+                    Container(
+                      width: double.infinity,
+                      height: 50,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.grey.shade300, width: 1),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.05),
+                            blurRadius: 10,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
+                      ),
+                      child: InkWell(
+                        onTap: _isLoading ? null : _handleGoogleLogin,
+                        borderRadius: BorderRadius.circular(10),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: const [
+                            GoogleLogo(size: 22),
+                            SizedBox(width: 12),
+                            Text(
+                              'Log in with Google',
+                              style: TextStyle(
+                                color: Color(0xFF1E293B),
+                                fontWeight: FontWeight.w600,
+                                fontSize: 14.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    // Divider
+                    Row(
+                      children: [
+                        Expanded(child: Divider(color: Colors.grey.shade300, thickness: 1)),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12.0),
+                          child: Text(
+                            'or',
+                            style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+                          ),
+                        ),
+                        Expanded(child: Divider(color: Colors.grey.shade300, thickness: 1)),
+                      ],
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    // Email Field
+                    TextFormField(
+                      controller: _emailController,
+                      keyboardType: TextInputType.emailAddress,
+                      style: const TextStyle(fontSize: 14.5, color: Color(0xFF0F172A), fontWeight: FontWeight.w500),
+                      decoration: const InputDecoration(
+                        labelText: 'Email',
+                        hintText: 'your@email.com',
+                        prefixIcon: Icon(Icons.email_outlined),
+                      ),
+                      validator: (value) {
+                        if (value == null || value.trim().isEmpty) {
+                          return 'Please enter your email';
+                        }
+                        if (!value.contains('@')) {
+                          return 'Enter a valid email address';
+                        }
+                        return null;
+                      },
+                    ),
+
+                    const SizedBox(height: 14),
+
+                    // Password Field
+                    TextFormField(
+                      controller: _passwordController,
+                      obscureText: _obscurePassword,
+                      style: const TextStyle(fontSize: 14.5, color: Color(0xFF0F172A), fontWeight: FontWeight.w500),
+                      decoration: InputDecoration(
+                        labelText: 'Password',
+                        hintText: '••••••',
+                        prefixIcon: const Icon(Icons.lock_outline_rounded),
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            _obscurePassword
+                                ? Icons.visibility_off_outlined
+                                : Icons.visibility_outlined,
+                            size: 20,
+                          ),
+                          onPressed: () {
+                            setState(() {
+                              _obscurePassword = !_obscurePassword;
+                            });
+                          },
+                        ),
+                      ),
+                      validator: (value) {
+                        if (value == null || value.isEmpty) {
+                          return 'Please enter your password';
+                        }
+                        if (value.length < 6) {
+                          return 'Password must be at least 6 characters';
+                        }
+                        return null;
+                      },
+                    ),
+
+                    const SizedBox(height: 10),
+
+                    // Forgot Password
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: GestureDetector(
+                        onTap: _handleForgotPassword,
+                        child: const Text(
+                          'Forgot Password?',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Color(0xFF4338CA),
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 22),
+
+                    // Log in Button
+                    SizedBox(
+                      width: double.infinity,
+                      height: 50,
+                      child: ElevatedButton(
+                        onPressed: _isLoading ? null : _handleEmailLogin,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.black,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(25),
+                          ),
+                        ),
+                        child: _isLoading
+                            ? const SizedBox(
+                                height: 20,
+                                width: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Text(
+                                'Log in',
+                                style: TextStyle(
+                                  fontSize: 15.5,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 14),
+
+                    // Sign up
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.92),
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.05),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Text(
+                            "Don't have an account? ",
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF0F172A),
+                            ),
+                          ),
+                          GestureDetector(
+                            onTap: _handleSignUp,
+                            child: const Text(
+                              'Sign up',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFF4338CA),
+                                decoration: TextDecoration.underline,
+                                decorationColor: Color(0xFF4338CA),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -1,54 +1,4458 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:image/image.dart' as img;
 import 'trip_details_screen.dart';
+import '../trip_qr_screen.dart';
+import '../services/trip_api.dart';
+import '../services/karnataka_places.dart';
+import '../models/trip_plan_models.dart';
+import '../widgets/hotel_map_picker.dart';
+import 'google_maps_selection.dart';
+import 'hotel_booking_maps.dart';
+import '../widgets/google_maps_icon.dart';
+import '../widgets/app_logo.dart';
+import '../services/road_routing_service.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
+
+/// Automatically capitalizes the first letter of entered text
+class FirstLetterCapitalizationFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    if (newValue.text.isEmpty) return newValue;
+    final text = newValue.text;
+    final firstChar = text[0];
+    final upperFirst = firstChar.toUpperCase();
+    if (firstChar != upperFirst) {
+      final updatedText = upperFirst + text.substring(1);
+      return newValue.copyWith(
+        text: updatedText,
+        selection: newValue.selection,
+      );
+    }
+    return newValue;
+  }
+}
 
 class CreateTripScreen extends StatefulWidget {
-  const CreateTripScreen({super.key});
+  final bool isHost;
+  final String? tripCode;
+  final Map<String, dynamic>? initialTripData;
+  final int? initialStep;
+
+  const CreateTripScreen({
+    super.key,
+    this.isHost = true,
+    this.tripCode,
+    this.initialTripData,
+    this.initialStep,
+  });
 
   @override
   State<CreateTripScreen> createState() => _CreateTripScreenState();
 }
 
 class _CreateTripScreenState extends State<CreateTripScreen> {
-  int _currentTabIndex = 0;
+  final TextEditingController _destinationController = TextEditingController();
+  final TextEditingController _startDateController = TextEditingController();
+  final TextEditingController _endDateController = TextEditingController();
+  final TextEditingController _groupSizeController = TextEditingController();
+  final TextEditingController _tripNameController = TextEditingController();
+  final TextEditingController _startPointController = TextEditingController();
+  final TextEditingController _hotelController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
 
-  final List<Tab> _tabs = const [
-    Tab(text: 'Details'),
-    Tab(text: 'Group'),
-    Tab(text: 'Preferences'),
-    Tab(text: 'Show trip'),
-  ];
+  String _travelMode = 'DRIVE';
+  Timer? _cityDebounce;
+  List<CitySuggestion> _citySuggestions = [];
+  bool _isSearchingCity = false;
+  String? _selectedCityPlaceId;
+  double? _selectedCityLat;
+  double? _selectedCityLng;
+
+  Timer? _startPointDebounce;
+  List<CitySuggestion> _startPointSuggestions = [];
+  bool _isSearchingStartPoint = false;
+  bool _isFetchingLocation = false;
+  double? _startLat;
+  double? _startLng;
+
+  Timer? _hotelDebounce;
+  List<CitySuggestion> _hotelSuggestions = [];
+  bool _isSearchingHotel = false;
+  double? _hotelLat;
+  double? _hotelLng;
+
+  DiscoverResponse? _discoverData;
+  ItineraryPlan? _itineraryPlan;
+  bool _isPlanningTrip = false;
+
+  DateTime? _startDate;
+  DateTime? _endDate;
+
+  // Specific error warnings for Step 1 details inputs
+  String? _destinationError;
+  String? _startDateError;
+  String? _endDateError;
+  String? _groupSizeError;
+  String? _stepWarningMessage;
+  int _maxStepReached = 1;
+
+  // Half-page Route Map preview variables for Steps 2, 3, 4, 5
+  GoogleMapController? _routeMapController;
+  final Set<Marker> _routeMarkers = {};
+  final Set<Polyline> _routePolylines = {};
+  List<LatLng> _routePoints = [];
+  String? _routeDistanceText;
+  String? _routeDurationText;
+  bool _isLoadingRoute = false;
+
+  DateTime? _parseDate(String text) {
+    try {
+      final parts = text.split('/');
+      if (parts.length == 3) {
+        final day = int.parse(parts[0]);
+        final month = int.parse(parts[1]);
+        final year = int.parse(parts[2]);
+        return DateTime(year, month, day);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  int _currentStep = 1;
+  final List<String> _selectedPlaces = [];
+  Map<String, List<String>> _suggestedPlaces = {};
+  bool _isLoadingPlaces = false;
+  bool _isFetchingPlaces = false; // prevents concurrent duplicate fetches
+  String _lastFetchedDestination = '';
+  
+  late bool _isHost;
+  late String _tripCode;
+
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _tripSubscription;
+  Set<String> _groupPlaces = {};
+  Map<String, int> _groupPickCounts = {}; // how many OTHER members picked each place
+  int _approvedMemberCount = 1;
+  final Set<String> _pendingRequestIdsHandled = {};
+  bool _isShowingApprovalDialog = false;
+  bool _hasSavedTrip = false;
+
+  Future<void> _handleExitWithoutSaving() async {
+    if (!_hasSavedTrip && _isHost) {
+      try {
+        await FirebaseFirestore.instance.collection('trips').doc(_tripCode).delete();
+      } catch (e) {
+        debugPrint('Notice deleting unsaved trip draft: $e');
+      }
+    }
+  }
 
   @override
-  Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: _tabs.length,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Create Trip'),
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: () => Navigator.pop(context),
+  void initState() {
+    super.initState();
+    _isHost = widget.isHost;
+    if (widget.initialStep != null) {
+      _currentStep = widget.initialStep!;
+    } else if (!_isHost) {
+      _currentStep = 3; // Automatically start participants in planning room
+    }
+    if (!_isHost) {
+      _maxStepReached = 4;
+    }
+    _tripCode = widget.tripCode ??
+        'TRIP-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
+
+    if (widget.initialTripData != null) {
+      _applyTripData(widget.initialTripData!);
+    } else if (widget.tripCode != null) {
+      _lookupAndApplyTrip(widget.tripCode!);
+    }
+
+    if (_isHost) {
+      _syncTripToFirestore(isInitial: true);
+    }
+
+    _listenToTripUpdates();
+
+    if (_startPointController.text.isEmpty) {
+      _detectCurrentLocationSilently();
+    }
+  }
+
+  void _applyTripData(Map<String, dynamic> data) {
+    if (data['destination'] != null && data['destination'].toString().isNotEmpty) {
+      String dest = data['destination'].toString().trim();
+      if (dest.length > 100) dest = dest.substring(0, 100);
+      if (dest.isNotEmpty) {
+        dest = dest[0].toUpperCase() + dest.substring(1);
+      }
+      _destinationController.text = dest;
+      final cityCoord = KarnatakaPlacesRegistry.resolvePlace(dest);
+      if (cityCoord != null) {
+        _selectedCityLat = cityCoord.lat;
+        _selectedCityLng = cityCoord.lng;
+      }
+      _fetchPlacesViaBackend(_destinationController.text);
+    }
+    if (data['tripName'] != null) {
+      _tripNameController.text = data['tripName'].toString();
+    }
+    if (data['startDate'] != null) {
+      _startDateController.text = data['startDate'].toString();
+      _startDate = _parseDate(_startDateController.text);
+    }
+    if (data['endDate'] != null) {
+      _endDateController.text = data['endDate'].toString();
+      _endDate = _parseDate(_endDateController.text);
+    }
+    if (data['groupSize'] != null) {
+      _groupSizeController.text = data['groupSize'].toString();
+    }
+    if (data['startPoint'] != null) {
+      _startPointController.text = data['startPoint'].toString();
+    }
+    if (data['startLat'] != null) {
+      _startLat = double.tryParse(data['startLat'].toString());
+    }
+    if (data['startLng'] != null) {
+      _startLng = double.tryParse(data['startLng'].toString());
+    }
+    if ((_startLat == null || _startLng == null) && _startPointController.text.trim().isNotEmpty) {
+      final res = KarnatakaPlacesRegistry.resolvePlace(_startPointController.text.trim());
+      if (res != null) {
+        _startLat = res.lat;
+        _startLng = res.lng;
+      }
+    }
+    if (data['hotel'] != null) {
+      _hotelController.text = data['hotel'].toString();
+    }
+    if (data['hotelLat'] != null) {
+      _hotelLat = double.tryParse(data['hotelLat'].toString());
+    }
+    if (data['hotelLng'] != null) {
+      _hotelLng = double.tryParse(data['hotelLng'].toString());
+    }
+    if (data['travelMode'] != null) {
+      _travelMode = data['travelMode'].toString();
+    }
+    if (data['itineraryPlan'] is Map) {
+      try {
+        _itineraryPlan = ItineraryPlan.fromJson(Map<String, dynamic>.from(data['itineraryPlan']));
+      } catch (_) {}
+    }
+    if (data['places'] is List) {
+      _selectedPlaces.clear();
+      _selectedPlaces.addAll((data['places'] as List).map((e) => e.toString()));
+    }
+    if (data['tripCode'] != null && data['tripCode'].toString().isNotEmpty) {
+      _tripCode = data['tripCode'].toString();
+    }
+  }
+
+  Future<void> _syncTripToFirestore({bool isInitial = false}) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      final docRef = FirebaseFirestore.instance.collection('trips').doc(_tripCode);
+
+      final allPlacesToSync = <String>{..._groupPlaces, ..._selectedPlaces}.toList();
+      final destName = _destinationController.text.trim();
+      final Map<String, dynamic> placeCoordsToSync = {};
+      if (_discoverData != null) {
+        for (var p in _discoverData!.places) {
+          if (p.lat != 0.0 || p.lng != 0.0) {
+            placeCoordsToSync[p.name] = {
+              'lat': p.lat,
+              'lng': p.lng,
+            };
+          }
+        }
+      }
+      for (var place in allPlacesToSync) {
+        if (!placeCoordsToSync.containsKey(place)) {
+          final coord = KarnatakaPlacesRegistry.findPlaceCoordinate(place, destination: destName);
+          if (coord != null) {
+            placeCoordsToSync[place] = {
+              'lat': coord.lat,
+              'lng': coord.lng,
+            };
+          }
+        }
+      }
+
+      final Map<String, dynamic> updateData = {
+        'tripCode': _tripCode,
+        'tripName': _tripNameController.text.trim().isNotEmpty
+            ? _tripNameController.text.trim()
+            : '${_destinationController.text.trim()} Trip',
+        'destination': _destinationController.text.trim(),
+        'startDate': _startDateController.text.trim(),
+        'endDate': _endDateController.text.trim(),
+        'groupSize': _groupSizeController.text.trim(),
+        'startPoint': _startPointController.text.trim(),
+        'startLat': _startLat,
+        'startLng': _startLng,
+        'hotel': _hotelController.text.trim(),
+        'hotelLat': _hotelLat,
+        'hotelLng': _hotelLng,
+        'travelMode': _travelMode,
+        'cityPlaceId': _selectedCityPlaceId,
+        'itineraryPlan': _itineraryPlan?.toJson(),
+        'isSaved': _hasSavedTrip,
+        'status': _hasSavedTrip ? 'completed' : 'draft',
+        'userEmail': user?.email?.trim().toLowerCase() ?? '',
+        'creatorEmail': user?.email?.trim().toLowerCase() ?? '',
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+      if (allPlacesToSync.isNotEmpty) {
+        updateData['places'] = allPlacesToSync;
+      }
+      if (placeCoordsToSync.isNotEmpty) {
+        updateData['placeCoordinates'] = placeCoordsToSync;
+      }
+
+      if (isInitial && _isHost) {
+        updateData['hostUid'] = user?.uid ?? 'host';
+        updateData['hostName'] = user?.displayName ?? (user?.email?.split('@').first ?? 'Host');
+        updateData['hostPhotoUrl'] = user?.photoURL ?? '';
+        updateData['createdAt'] = FieldValue.serverTimestamp();
+        updateData['approvedMembers'] = [
+          {
+            'uid': user?.uid ?? 'host',
+            'name': user?.displayName ?? (user?.email?.split('@').first ?? 'Host'),
+            'photoUrl': user?.photoURL ?? '',
+            'role': 'host',
+          }
+        ];
+        updateData['pendingRequests'] = [];
+        updateData['memberPreferences'] = {};
+        updateData['places'] = allPlacesToSync.isNotEmpty ? allPlacesToSync : _selectedPlaces;
+      }
+
+      await docRef.set(updateData, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint('Error syncing trip to Firestore: $e');
+    }
+  }
+
+  Future<void> _syncPreferencesToFirestore() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      final uid = user?.uid ?? (_isHost ? 'host' : 'participant_${DateTime.now().millisecondsSinceEpoch}');
+      final docRef = FirebaseFirestore.instance.collection('trips').doc(_tripCode);
+
+      await docRef.set({
+        'memberPreferences': {
+          uid: _selectedPlaces,
+        },
+        'places': FieldValue.arrayUnion(_selectedPlaces),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint('Error syncing preferences to Firestore: $e');
+    }
+  }
+
+  void _listenToTripUpdates() {
+    try {
+      _tripSubscription = FirebaseFirestore.instance
+        .collection('trips')
+        .doc(_tripCode)
+        .snapshots()
+        .listen((snapshot) {
+      if (!snapshot.exists || snapshot.data() == null) return;
+      final data = snapshot.data()!;
+
+      // 1. Gather group preferences from OTHER members only
+      //    (exclude current user's own picks to avoid false "Group Pick" labels)
+      final String currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+
+      final Map<String, int> pickCounts = {}; // place -> count of OTHER members who picked it
+      final Set<String> groupPlaces = {};
+      final memberPrefs = data['memberPreferences'] as Map<String, dynamic>?;
+      if (memberPrefs != null) {
+        for (final entry in memberPrefs.entries) {
+          final memberUid = entry.key;
+          if (memberUid == currentUid) continue; // skip own selections
+          final userPlaces = entry.value;
+          if (userPlaces is List) {
+            for (final p in userPlaces) {
+              final name = p.toString();
+              groupPlaces.add(name);
+              pickCounts[name] = (pickCounts[name] ?? 0) + 1;
+            }
+          }
+        }
+      }
+      // NOTE: intentionally NOT using data['places'] (arrayUnion) because it
+      // never shrinks and would show stale badges after deselection.
+
+      final approved = (data['approvedMembers'] as List?) ?? [];
+
+      if (mounted) {
+        setState(() {
+          _groupPlaces = groupPlaces;
+          _groupPickCounts = pickCounts;
+          _approvedMemberCount = approved.isNotEmpty ? approved.length : 1;
+
+          // If participant, ensure destination & groupSize mirror the host's exact values
+          if (!_isHost) {
+            final hostDest = (data['destination'] ?? data['tripName'])?.toString();
+            if (hostDest != null &&
+                hostDest.isNotEmpty &&
+                _destinationController.text != hostDest) {
+              _destinationController.text = hostDest;
+              _fetchPlacesViaBackend(hostDest);
+            }
+            final hostGroupSize = data['groupSize']?.toString();
+            if (hostGroupSize != null &&
+                hostGroupSize.isNotEmpty &&
+                _groupSizeController.text != hostGroupSize) {
+              _groupSizeController.text = hostGroupSize;
+            }
+          }
+
+          // Real-time sync of AI itinerary plan
+          if (data['itineraryPlan'] != null && _itineraryPlan == null) {
+            try {
+              _itineraryPlan = ItineraryPlan.fromJson(
+                Map<String, dynamic>.from(data['itineraryPlan']),
+              );
+            } catch (_) {}
+          }
+
+          // Real-time sync of places confirmation across members
+          if (data['placesConfirmed'] == true && _routePoints.isEmpty) {
+            _fetchRouteForMap();
+          }
+        });
+      }
+
+      // 2. If Host, handle any pending join requests
+      if (_isHost) {
+        final pending = (data['pendingRequests'] as List?) ?? [];
+        for (final req in pending) {
+          if (req is Map) {
+            final uid = req['uid']?.toString() ?? '';
+            if (uid.isNotEmpty && !_pendingRequestIdsHandled.contains(uid)) {
+              _pendingRequestIdsHandled.add(uid);
+              _showHostApprovalDialog(req);
+              break; // Show one at a time
+            }
+          }
+        }
+      }
+    }, onError: (e) {
+      debugPrint('Error listening to trip updates: $e');
+    });
+    } catch (e) {
+      debugPrint('Error initializing trip listener: $e');
+    }
+  }
+
+  Future<void> _showHostApprovalDialog(Map req) async {
+    if (_isShowingApprovalDialog) return;
+    _isShowingApprovalDialog = true;
+    final userName = req['name']?.toString() ?? 'A traveler';
+    final userUid = req['uid']?.toString() ?? '';
+    final userPhoto = req['photoUrl']?.toString();
+
+    if (!mounted) {
+      _isShowingApprovalDialog = false;
+      return;
+    }
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) {
+        return AlertDialog(
+          backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6366F1).withValues(alpha: 0.15),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.person_add_rounded, color: Color(0xFF6366F1), size: 24),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Join Request',
+                  style: TextStyle(
+                    color: isDark ? Colors.white : const Color(0xFF0F172A),
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
+                ),
+              ),
+            ],
           ),
-          bottom: TabBar(
-            tabs: _tabs,
-            onTap: (index) {
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '$userName wants to join your trip planning room for ${_destinationController.text.isNotEmpty ? _destinationController.text : "this trip"}.',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569),
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.pin_rounded, size: 16, color: Color(0xFF6366F1)),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Trip Code: $_tripCode',
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                        color: isDark ? const Color(0xFFA5B4FC) : const Color(0xFF4F46E5),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx, false),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.redAccent,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              ),
+              child: const Text('Deny', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogCtx, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF6366F1),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+              ),
+              child: const Text('Allow', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      },
+    );
+
+    _isShowingApprovalDialog = false;
+
+    // Update Firestore with the host's decision
+    final docRef = FirebaseFirestore.instance.collection('trips').doc(_tripCode);
+    try {
+      if (result == true) {
+        await docRef.update({
+          'pendingRequests': FieldValue.arrayRemove([req]),
+          'approvedMembers': FieldValue.arrayUnion([
+            {
+              'uid': userUid,
+              'name': userName,
+              'photoUrl': userPhoto ?? '',
+              'role': 'member',
+              'joinedAt': Timestamp.now(),
+            }
+          ]),
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('$userName joined the planning room!'),
+              backgroundColor: const Color(0xFF10B981),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      } else {
+        await docRef.update({
+          'pendingRequests': FieldValue.arrayRemove([req]),
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Request from $userName was declined.'),
+              backgroundColor: Colors.redAccent,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('Error updating join request decision: $e');
+    }
+  }
+
+  Future<void> _lookupAndApplyTrip(String code) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final user = FirebaseAuth.instance.currentUser;
+      final userEmail = user?.email?.trim().toLowerCase() ??
+          prefs.getString('user_profile_email')?.trim().toLowerCase() ?? '';
+      final userKey = userEmail.isNotEmpty ? 'saved_trips_$userEmail' : 'saved_trips';
+      final savedTrips = prefs.getStringList(userKey) ?? (prefs.getStringList('saved_trips') ?? []);
+      final cleanCode = code.trim().toUpperCase();
+
+      for (final tripStr in savedTrips) {
+        try {
+          final Map<String, dynamic> trip = jsonDecode(tripStr);
+          final tripCode =
+              (trip['tripCode'] ?? trip['id'] ?? '').toString().toUpperCase();
+          if (tripCode == cleanCode ||
+              tripCode.contains(cleanCode) ||
+              cleanCode.contains(tripCode)) {
+            if (mounted) {
               setState(() {
-                _currentTabIndex = index;
+                _applyTripData(trip);
               });
+            }
+            return;
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    // Firestore lookup
+    try {
+      final doc =
+          await FirebaseFirestore.instance.collection('trips').doc(code.trim()).get();
+      if (doc.exists && doc.data() != null) {
+        final data = doc.data()!;
+        if (mounted) {
+          setState(() {
+            _applyTripData({
+              'destination': data['destination'] ?? data['tripName'] ?? '',
+              'startDate': data['startDate'],
+              'endDate': data['endDate'],
+              'groupSize': data['groupSize'],
+              'places': data['places'],
+              'tripCode': code.trim(),
+            });
+          });
+        }
+        return;
+      }
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    if (!_hasSavedTrip && _isHost) {
+      FirebaseFirestore.instance
+          .collection('trips')
+          .doc(_tripCode)
+          .delete()
+          .catchError((_) {});
+    }
+    _tripSubscription?.cancel();
+    _cityDebounce?.cancel();
+    _startPointDebounce?.cancel();
+    _hotelDebounce?.cancel();
+    _destinationController.dispose();
+    _startDateController.dispose();
+    _endDateController.dispose();
+    _groupSizeController.dispose();
+    _tripNameController.dispose();
+    _startPointController.dispose();
+    _hotelController.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _detectCurrentLocationSilently() async {
+    try {
+      final permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.always || permission == LocationPermission.whileInUse) {
+        final position = await Geolocator.getLastKnownPosition() ??
+            await Geolocator.getCurrentPosition(
+              locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium),
+            );
+        final placeName = await TripApi.reverseGeocode(position.latitude, position.longitude);
+
+        if (mounted && (_startPointController.text.isEmpty || _startPointController.text.startsWith('Location (')) && placeName.isNotEmpty) {
+          setState(() {
+            _startPointController.text = placeName;
+            _startLat = position.latitude;
+            _startLng = position.longitude;
+          });
+          if (_currentStep == 2) {
+            _fetchRouteForMap();
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _useCurrentLocation() async {
+    setState(() {
+      _isFetchingLocation = true;
+    });
+
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Please enable GPS / Location services on your phone.'),
+              backgroundColor: Colors.amber,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+        setState(() {
+          _isFetchingLocation = false;
+        });
+        return;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Location permission was denied.'),
+                backgroundColor: Colors.redAccent,
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          }
+          setState(() {
+            _isFetchingLocation = false;
+          });
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Location permission is permanently denied. Please allow it in settings.'),
+              backgroundColor: Colors.redAccent,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+        setState(() {
+          _isFetchingLocation = false;
+        });
+        return;
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      );
+
+      final placeName = await TripApi.reverseGeocode(position.latitude, position.longitude);
+
+      if (mounted) {
+        setState(() {
+          _startPointController.text = placeName;
+          _startLat = position.latitude;
+          _startLng = position.longitude;
+          _startPointSuggestions = [];
+          _isFetchingLocation = false;
+        });
+
+        _fetchRouteForMap();
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Starting point set to: $placeName'),
+            backgroundColor: const Color(0xFF6366F1),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error getting current location: $e');
+      if (mounted) {
+        setState(() {
+          _isFetchingLocation = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not determine current location. You can type it manually.'),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  void _onStartPointChanged(String query) {
+    _startPointDebounce?.cancel();
+    final clean = query.trim();
+    if (clean.isEmpty) {
+      setState(() {
+        _startPointSuggestions = [];
+        _isSearchingStartPoint = false;
+        _startLat = null;
+        _startLng = null;
+      });
+      return;
+    }
+
+    final local = KarnatakaPlacesRegistry.resolvePlace(clean);
+    if (local != null) {
+      _startLat = local.lat;
+      _startLng = local.lng;
+    }
+
+    setState(() {
+      _isSearchingStartPoint = true;
+    });
+
+    _startPointDebounce = Timer(const Duration(milliseconds: 250), () async {
+      try {
+        final suggestions = await TripApi.autocompleteCity(clean, types: 'geocode');
+        if (mounted) {
+          setState(() {
+            _startPointSuggestions = suggestions;
+            _isSearchingStartPoint = false;
+          });
+        }
+      } catch (_) {
+        if (mounted) {
+          setState(() {
+            _isSearchingStartPoint = false;
+          });
+        }
+      }
+
+      final resolved = await TripApi.resolveAddressOrPlace(clean);
+      if (resolved != null && mounted) {
+        setState(() {
+          _startLat = resolved.lat;
+          _startLng = resolved.lng;
+        });
+        if (_currentStep == 2) {
+          _fetchRouteForMap();
+        }
+      }
+    });
+  }
+
+  void _onHotelChanged(String query) {
+    _hotelDebounce?.cancel();
+    final clean = query.trim();
+    if (clean.isEmpty) {
+      setState(() {
+        _hotelSuggestions = [];
+        _isSearchingHotel = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _isSearchingHotel = true;
+    });
+
+    _hotelDebounce = Timer(const Duration(milliseconds: 150), () async {
+      try {
+        final dest = _destinationController.text.trim();
+        final suggestions = await TripApi.autocompleteCity(
+          clean,
+          types: 'lodging',
+          destination: dest,
+        );
+        if (mounted) {
+          setState(() {
+            _hotelSuggestions = suggestions;
+            _isSearchingHotel = false;
+          });
+        }
+      } catch (_) {
+        if (mounted) {
+          setState(() {
+            _isSearchingHotel = false;
+          });
+        }
+      }
+    });
+  }
+
+  Future<void> _openGoogleMapsSelection() async {
+    final initialDest = _destinationController.text.trim();
+    final initialStart = _startPointController.text.trim();
+    final initialDestLoc = (_selectedCityLat != null && _selectedCityLng != null)
+        ? LatLng(_selectedCityLat!, _selectedCityLng!)
+        : null;
+    final initialStartLoc = (_startLat != null && _startLng != null)
+        ? LatLng(_startLat!, _startLng!)
+        : null;
+
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => GoogleMapsSelection(
+          initialDestination: initialDest,
+          initialStartPoint: initialStart,
+          initialDestinationLocation: initialDestLoc,
+          initialStartLocation: initialStartLoc,
+        ),
+      ),
+    );
+
+    if (result != null && result is Map<String, dynamic> && mounted) {
+      final destName = result['destinationName']?.toString() ?? '';
+      String startName = result['currentLocationName']?.toString() ?? '';
+      if (startName.startsWith('Location (') || RegExp(r'^\s*\(?\s*\d+\.\d+').hasMatch(startName)) {
+        startName = 'Present Location, Karnataka';
+      }
+      final destLatLng = result['destination'] as LatLng?;
+      LatLng? startLatLng = result['currentLocation'] as LatLng?;
+
+      final resolvedStart = KarnatakaPlacesRegistry.resolvePlace(startName);
+      if (resolvedStart != null) {
+        startLatLng = LatLng(resolvedStart.lat, resolvedStart.lng);
+      }
+
+      final resolvedDest = KarnatakaPlacesRegistry.resolvePlace(destName);
+      LatLng? finalDestLatLng = destLatLng;
+      if (resolvedDest != null) {
+        finalDestLatLng = LatLng(resolvedDest.lat, resolvedDest.lng);
+      }
+
+      _cityDebounce?.cancel();
+      _startPointDebounce?.cancel();
+
+      setState(() {
+        if (destName.isNotEmpty) {
+          _destinationController.text = destName;
+        }
+        if (startName.isNotEmpty) {
+          _startPointController.text = startName;
+        }
+        if (finalDestLatLng != null) {
+          _selectedCityLat = finalDestLatLng.latitude;
+          _selectedCityLng = finalDestLatLng.longitude;
+        }
+        if (startLatLng != null) {
+          _startLat = startLatLng.latitude;
+          _startLng = startLatLng.longitude;
+        }
+        if (!KarnatakaPlacesRegistry.isPlaceInKarnataka(destName, lat: destLatLng?.latitude, lng: destLatLng?.longitude)) {
+          _destinationError = 'This app is only for Karnataka. "$destName" is outside Karnataka.';
+        } else {
+          _destinationError = null;
+        }
+        _startDateError = null;
+        _stepWarningMessage = null;
+        _citySuggestions = [];
+        _startPointSuggestions = [];
+        _isSearchingCity = false;
+        _isSearchingStartPoint = false;
+      });
+
+      _fetchRouteForMap();
+
+      // Do not trigger suggestions when autofilling from Google Maps. Suggestions will only show when user manually types.
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Autofilled from Google Maps: $destName (Starting: $startName)',
+          ),
+          backgroundColor: const Color(0xFF4285F4),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _openHotelMapPicker() async {
+    final destName = _destinationController.text.trim().isNotEmpty
+        ? _destinationController.text.trim()
+        : 'Coorg';
+    final resolvedDest = KarnatakaPlacesRegistry.resolvePlace(destName);
+    final destLat = _selectedCityLat ?? resolvedDest?.lat ?? 12.4244;
+    final destLng = _selectedCityLng ?? resolvedDest?.lng ?? 75.7382;
+
+    // Resolve user present location for distance & route calculation
+    LatLng userPos;
+    if (_startLat != null && _startLng != null) {
+      userPos = LatLng(_startLat!, _startLng!);
+    } else if (_startPointController.text.trim().isNotEmpty) {
+      final resolvedStart = KarnatakaPlacesRegistry.resolvePlace(_startPointController.text.trim());
+      if (resolvedStart != null) {
+        userPos = LatLng(resolvedStart.lat, resolvedStart.lng);
+        _startLat = resolvedStart.lat;
+        _startLng = resolvedStart.lng;
+      } else {
+        userPos = const LatLng(13.9299, 75.5681);
+      }
+    } else {
+      userPos = const LatLng(13.9299, 75.5681);
+    }
+
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => HotelBookingMaps(
+          userLocation: userPos,
+          destinationCity: destName,
+          destinationLocation: LatLng(destLat, destLng),
+        ),
+      ),
+    );
+
+    if (result != null && mounted) {
+      if (result is Hotel) {
+        setState(() {
+          _hotelController.text = result.name;
+          _hotelLat = result.latitude;
+          _hotelLng = result.longitude;
+          _hotelSuggestions = [];
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Selected Hotel: ${result.name} (₹${result.pricePerNight}/night)'),
+            backgroundColor: const Color(0xFF6366F1),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      } else if (result is HotelPickResult) {
+        setState(() {
+          _hotelController.text = result.name;
+          _hotelLat = result.lat;
+          _hotelLng = result.lng;
+          _hotelSuggestions = [];
+        });
+      }
+    }
+  }
+
+  void _onCityChanged(String query) {
+    _cityDebounce?.cancel();
+    final clean = query.trim();
+    if (clean.isEmpty) {
+      setState(() {
+        _citySuggestions = [];
+        _isSearchingCity = false;
+        _destinationError = null;
+      });
+      return;
+    }
+
+    final bool isOutside = KarnatakaPlacesRegistry.isExplicitlyOutsideKarnataka(clean) ||
+        (!KarnatakaPlacesRegistry.isPlaceInKarnataka(clean) && clean.length >= 3);
+
+    if (isOutside) {
+      setState(() {
+        _citySuggestions = [];
+        _isSearchingCity = false;
+        _destinationError = 'This app is only for Karnataka. "$clean" is outside Karnataka.';
+      });
+      return;
+    } else {
+      setState(() {
+        _destinationError = null;
+        _isSearchingCity = true;
+      });
+    }
+
+    _cityDebounce = Timer(const Duration(milliseconds: 150), () async {
+      try {
+        final suggestions = await TripApi.autocompleteCity(clean);
+        if (mounted) {
+          setState(() {
+            _citySuggestions = suggestions;
+            _isSearchingCity = false;
+          });
+        }
+      } catch (_) {
+        if (mounted) {
+          setState(() {
+            _isSearchingCity = false;
+          });
+        }
+      }
+    });
+  }
+
+  Future<void> _selectCitySuggestion(CitySuggestion suggestion) async {
+    _cityDebounce?.cancel();
+    final cityName = suggestion.description.split(',').first.trim();
+
+    if (!KarnatakaPlacesRegistry.isPlaceInKarnataka(suggestion.description)) {
+      setState(() {
+        _citySuggestions = [];
+        _isSearchingCity = false;
+        _destinationError = 'This app is only for Karnataka. "$cityName" is outside Karnataka.';
+        _destinationController.clear();
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('This app is only for Karnataka. "$cityName" is outside Karnataka.'),
+            backgroundColor: const Color(0xFFEF4444),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    _destinationController.text = cityName;
+    setState(() {
+      _citySuggestions = [];
+      _isSearchingCity = false;
+      _destinationError = null;
+    });
+
+    try {
+      final res = await TripApi.resolveCity(suggestion.placeId);
+      if (mounted) {
+        if (!KarnatakaPlacesRegistry.isPlaceInKarnataka(cityName, lat: res.lat, lng: res.lng)) {
+          setState(() {
+            _selectedCityLat = null;
+            _selectedCityLng = null;
+            _destinationController.clear();
+            _destinationError = '$cityName is outside Karnataka.';
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('$cityName is outside Karnataka. NextTripia is dedicated to trips within Karnataka.'),
+              backgroundColor: const Color(0xFFEF4444),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+          return;
+        }
+        setState(() {
+          _selectedCityPlaceId = res.placeId;
+          _selectedCityLat = res.lat;
+          _selectedCityLng = res.lng;
+          if (_hotelController.text.isEmpty) {
+            _hotelController.text = '$cityName Stay';
+          }
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _fetchPlacesViaBackend(String destination) async {
+    if (destination.isEmpty) return;
+    if (destination == _lastFetchedDestination && _suggestedPlaces.isNotEmpty) return;
+    if (_isFetchingPlaces) return; // already in flight — skip duplicate call
+
+    _isFetchingPlaces = true;
+    setState(() {
+      _isLoadingPlaces = true;
+      _suggestedPlaces = {};
+    });
+
+    try {
+      final response = await TripApi.discoverPlaces(
+        tripId: _tripCode,
+        city: destination,
+        lat: _selectedCityLat,
+        lng: _selectedCityLng,
+        radiusKm: 70.0,
+      );
+
+      final Map<String, List<String>> mapped = {};
+      final placeCards = response.places;
+      final placeMap = {for (var p in placeCards) p.placeId: p.name};
+
+      for (var entry in response.categories.entries) {
+        final catName = entry.key;
+        final pNames = entry.value
+            .map((pid) => placeMap[pid] ?? pid.replaceFirst('local_', '').replaceAll('_', ' ').toUpperCase())
+            .where((name) => name.isNotEmpty)
+            .toList();
+        if (pNames.isNotEmpty) {
+          mapped[catName] = pNames;
+        }
+      }
+
+      // If backend returned empty categories, use curated Karnataka places
+      if (mapped.isEmpty) {
+        final fallbackResp = KarnatakaPlacesRegistry.getDiscoverResponseForCity(
+          tripId: _tripCode,
+          destination: destination,
+          centerLat: _selectedCityLat,
+          centerLng: _selectedCityLng,
+          radiusKm: 70.0,
+        );
+        final fbPlaceMap = {for (var p in fallbackResp.places) p.placeId: p.name};
+        for (var entry in fallbackResp.categories.entries) {
+          final catName = entry.key;
+          final pNames = entry.value
+              .map((pid) => fbPlaceMap[pid] ?? pid)
+              .where((name) => name.isNotEmpty)
+              .toList();
+          if (pNames.isNotEmpty) {
+            mapped[catName] = pNames;
+          }
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _discoverData = response.places.isNotEmpty
+              ? response
+              : KarnatakaPlacesRegistry.getDiscoverResponseForCity(
+                  tripId: _tripCode,
+                  destination: destination,
+                  centerLat: _selectedCityLat,
+                  centerLng: _selectedCityLng,
+                  radiusKm: 70.0,
+                );
+          _suggestedPlaces = mapped;
+          _lastFetchedDestination = destination;
+          _isLoadingPlaces = false;
+          _isFetchingPlaces = false;
+        });
+      } else {
+        _isFetchingPlaces = false;
+      }
+    } catch (e) {
+      debugPrint('Error discovering places via backend: $e');
+      final fallbackResp = KarnatakaPlacesRegistry.getDiscoverResponseForCity(
+        tripId: _tripCode,
+        destination: destination,
+        centerLat: _selectedCityLat,
+        centerLng: _selectedCityLng,
+        radiusKm: 70.0,
+      );
+      final Map<String, List<String>> mapped = {};
+      final fbPlaceMap = {for (var p in fallbackResp.places) p.placeId: p.name};
+      for (var entry in fallbackResp.categories.entries) {
+        final catName = entry.key;
+        final pNames = entry.value
+            .map((pid) => fbPlaceMap[pid] ?? pid)
+            .where((name) => name.isNotEmpty)
+            .toList();
+        if (pNames.isNotEmpty) {
+          mapped[catName] = pNames;
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _isLoadingPlaces = false;
+          _isFetchingPlaces = false;
+          _discoverData = fallbackResp;
+          _suggestedPlaces = mapped;
+          _lastFetchedDestination = destination;
+        });
+      } else {
+        _isFetchingPlaces = false;
+      }
+    }
+  }
+
+  Future<void> _generateItineraryViaBackend() async {
+    final allCombinedPlaces = <String>{..._groupPlaces, ..._selectedPlaces}.toList();
+    if (allCombinedPlaces.isEmpty) {
+      if (_discoverData != null && _discoverData!.places.isNotEmpty) {
+        allCombinedPlaces.addAll(_discoverData!.places.take(5).map((p) => p.name));
+      } else {
+        final dest = _destinationController.text.trim();
+        final curated = KarnatakaPlacesRegistry.getCuratedAttractions(dest);
+        if (curated.isNotEmpty) {
+          allCombinedPlaces.addAll(curated.take(5).map((p) => p.name));
+        } else {
+          allCombinedPlaces.addAll([
+            if (dest.isNotEmpty) '$dest Landmark' else 'Historic Quarter',
+            if (dest.isNotEmpty) '$dest Nature Viewpoint' else 'Scenic Nature Reserve',
+            if (dest.isNotEmpty) '$dest Cultural Site' else 'Cultural Heritage Site',
+          ]);
+        }
+      }
+    }
+
+    List<String> datesList = [];
+    if (_startDate != null && _endDate != null) {
+      DateTime cur = _startDate!;
+      while (!cur.isAfter(_endDate!)) {
+        datesList.add('${cur.year}-${cur.month.toString().padLeft(2, '0')}-${cur.day.toString().padLeft(2, '0')}');
+        cur = cur.add(const Duration(days: 1));
+      }
+    }
+    if (datesList.isEmpty) {
+      datesList = ['Day 1', 'Day 2'];
+    }
+
+    setState(() {
+      _isPlanningTrip = true;
+    });
+
+    // Map place names to IDs 1-to-1
+    List<String> selectedIds = [];
+    List<PlaceCard> selectedPlaceCards = [];
+    for (final name in allCombinedPlaces) {
+      PlaceCard? card;
+      if (_discoverData != null) {
+        try {
+          card = _discoverData!.places.firstWhere((p) => p.name.trim().toLowerCase() == name.trim().toLowerCase());
+        } catch (_) {}
+      }
+      if (card != null) {
+        selectedIds.add(card.placeId);
+        selectedPlaceCards.add(card);
+      } else {
+        selectedIds.add(name);
+      }
+    }
+
+    try {
+      // Ensure start coordinates are resolved
+      double? sLat = _startLat;
+      double? sLng = _startLng;
+      if (sLat == null || sLng == null) {
+        final startText = _startPointController.text.trim();
+        if (startText.isNotEmpty) {
+          final res = KarnatakaPlacesRegistry.resolvePlace(startText);
+          if (res != null) {
+            sLat = res.lat;
+            sLng = res.lng;
+          } else {
+            final c = KarnatakaPlacesRegistry.findPlaceCoordinate(startText);
+            if (c != null) {
+              sLat = c.lat;
+              sLng = c.lng;
+            }
+          }
+        }
+      }
+
+      final plan = await TripApi.planTrip(
+        tripId: _tripCode,
+        dates: datesList,
+        selectedIds: selectedIds,
+        selectedNames: allCombinedPlaces,
+        availablePlaces: selectedPlaceCards.isNotEmpty ? selectedPlaceCards : _discoverData?.places,
+        start: _startPointController.text.trim().isNotEmpty
+            ? _startPointController.text.trim()
+            : 'Starting Point',
+        startLat: sLat,
+        startLng: sLng,
+        hotel: _hotelController.text.trim().isNotEmpty
+            ? _hotelController.text.trim()
+            : '${_destinationController.text.trim()} Hotel',
+        hotelLat: _hotelLat,
+        hotelLng: _hotelLng,
+        end: _hotelController.text.trim().isNotEmpty
+            ? _hotelController.text.trim()
+            : '${_destinationController.text.trim()} Hotel',
+        travelMode: _travelMode,
+      );
+
+      if (mounted) {
+        setState(() {
+          _itineraryPlan = plan;
+          _isPlanningTrip = false;
+        });
+        _syncTripToFirestore();
+      }
+    } catch (e) {
+      debugPrint('Error generating itinerary: $e');
+      if (mounted) {
+        setState(() {
+          _isPlanningTrip = false;
+        });
+      }
+    }
+  }
+
+  bool _validateStep1({bool showWarning = false}) {
+    bool hasError = false;
+    String? destErr;
+
+    final destText = _destinationController.text.trim();
+    if (destText.isEmpty) {
+      destErr = 'Please enter a destination';
+      hasError = true;
+    } else if (destText.length > 100) {
+      destErr = 'Destination must be within 100 characters';
+      hasError = true;
+    } else if (!KarnatakaPlacesRegistry.isPlaceInKarnataka(destText, lat: _selectedCityLat, lng: _selectedCityLng)) {
+      destErr = 'This app is only for Karnataka. "$destText" is outside Karnataka.';
+      hasError = true;
+    }
+
+    setState(() {
+      _destinationError = destErr;
+      if (hasError && showWarning) {
+        _stepWarningMessage = destErr ?? 'Please enter a destination city in Karnataka.';
+      } else if (!hasError) {
+        _stepWarningMessage = null;
+      }
+    });
+
+    if (hasError && showWarning) {
+      _showFillPreviousWarning(destErr ?? 'Please enter a destination city in Karnataka.');
+    }
+
+    return !hasError;
+  }
+
+  bool _validateStepDates({bool showWarning = false}) {
+    bool hasError = false;
+    String? startErr;
+    String? endErr;
+    String? groupErr;
+
+    final startText = _startDateController.text.trim();
+    if (startText.isEmpty) {
+      startErr = 'Please select a start date';
+      hasError = true;
+    }
+
+    final endText = _endDateController.text.trim();
+    if (endText.isEmpty) {
+      endErr = 'Please select an end date';
+      hasError = true;
+    } else if (_startDate != null && _endDate != null && _endDate!.isBefore(_startDate!)) {
+      endErr = 'End date must be on or after start date';
+      hasError = true;
+    }
+
+    if (_isHost) {
+      final groupText = _groupSizeController.text.trim();
+      if (groupText.isEmpty) {
+        groupErr = 'Please enter group size';
+        hasError = true;
+      } else {
+        final size = int.tryParse(groupText);
+        if (size == null || size <= 0) {
+          groupErr = 'Please enter a valid group size (at least 1)';
+          hasError = true;
+        }
+      }
+    }
+
+    setState(() {
+      _startDateError = startErr;
+      _endDateError = endErr;
+      _groupSizeError = groupErr;
+      if (hasError && showWarning) {
+        _stepWarningMessage = 'Please select travel dates and group details.';
+      } else if (!hasError) {
+        _stepWarningMessage = null;
+      }
+    });
+
+    if (hasError && showWarning) {
+      _showFillPreviousWarning('Please select travel dates and group details.');
+    }
+
+    return !hasError;
+  }
+
+  void _showFillPreviousWarning([String message = 'Please fill previous sections first.']) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: const Color(0xFFEF4444),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  Future<void> _onStepTapped(int targetStep) async {
+    if (targetStep == _currentStep) return;
+
+    if (targetStep < _currentStep) {
+      setState(() {
+        _stepWarningMessage = null;
+        _currentStep = targetStep;
+      });
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(0);
+      }
+      return;
+    }
+
+    // Must validate step 1 if moving past it
+    if (_isHost && !_validateStep1(showWarning: true)) {
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(0);
+      }
+      return;
+    }
+
+    // Must validate step 2 if moving past it
+    if (_isHost && targetStep > 2 && !_validateStepDates(showWarning: true)) {
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(0);
+      }
+      return;
+    }
+
+    // If jumping ahead of the next unvisited step
+    if (targetStep > _currentStep + 1 && targetStep > _maxStepReached) {
+      setState(() {
+        _stepWarningMessage = 'Please fill previous sections first.';
+      });
+      _showFillPreviousWarning();
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(0);
+      }
+      return;
+    }
+
+    if (_currentStep == 1) {
+      _fetchPlacesViaBackend(_destinationController.text.trim());
+      await _syncTripToFirestore();
+    } else if (_currentStep == 2) {
+      await _syncTripToFirestore();
+    } else if ((_isHost && _currentStep == 4) || (!_isHost && _currentStep == 3)) {
+      await _syncPreferencesToFirestore();
+    }
+
+    setState(() {
+      _stepWarningMessage = null;
+      _currentStep = targetStep;
+      if (_currentStep > _maxStepReached) {
+        _maxStepReached = _currentStep;
+      }
+    });
+
+    if (_scrollController.hasClients) {
+      _scrollController.jumpTo(0);
+    }
+  }
+
+
+  Widget _buildStepIndicator(String label, String number, bool isActive, bool isDark, int stepIndex) {
+    final bool isCompleted = stepIndex < _currentStep;
+    return GestureDetector(
+      onTap: () => _onStepTapped(stepIndex),
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: 52,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: isActive
+                    ? const Color(0xFF6366F1)
+                    : (isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9)),
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: isActive
+                      ? const Color(0xFF6366F1)
+                      : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                  width: 1.5,
+                ),
+              ),
+              child: Center(
+                child: isCompleted
+                    ? const Icon(Icons.check_rounded, size: 16, color: Colors.white)
+                    : Text(
+                        number,
+                        style: TextStyle(
+                          color: isActive
+                              ? Colors.white
+                              : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF94A3B8)),
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                        ),
+                      ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              label,
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 10,
+                color: isActive
+                    ? (isDark ? const Color(0xFF818CF8) : const Color(0xFF6366F1))
+                    : (isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8)),
+                fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTextField({
+    required String label,
+    required String hint,
+    required IconData icon,
+    required TextEditingController controller,
+    bool readOnly = false,
+    VoidCallback? onTap,
+    TextInputType? keyboardType,
+    required bool isDark,
+    String? errorText,
+    int? maxLength,
+    List<TextInputFormatter>? inputFormatters,
+    TextCapitalization textCapitalization = TextCapitalization.none,
+    ValueChanged<String>? onChanged,
+    Widget? suffixIcon,
+    Widget? aboveFieldWidget,
+    VoidCallback? onPrefixIconTap,
+    ValueChanged<String>? onSubmitted,
+  }) {
+    final bool hasError = errorText != null && errorText.isNotEmpty;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: hasError
+                    ? const Color(0xFFEF4444)
+                    : (isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155)),
+              ),
+            ),
+            if (maxLength != null)
+              ValueListenableBuilder<TextEditingValue>(
+                valueListenable: controller,
+                builder: (context, value, _) {
+                  final currentLen = value.text.length;
+                  return Text(
+                    '$currentLen / $maxLength',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: currentLen > maxLength
+                          ? const Color(0xFFEF4444)
+                          : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B)),
+                    ),
+                  );
+                },
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (aboveFieldWidget != null) ...[
+          aboveFieldWidget,
+          const SizedBox(height: 8),
+        ],
+        TextField(
+          controller: controller,
+          readOnly: readOnly,
+          onTap: onTap,
+          keyboardType: keyboardType,
+          inputFormatters: inputFormatters,
+          textCapitalization: textCapitalization,
+          onChanged: onChanged,
+          onSubmitted: onSubmitted,
+          style: TextStyle(
+            color: isDark ? Colors.white : const Color(0xFF0F172A),
+            fontWeight: FontWeight.w500,
+          ),
+          decoration: InputDecoration(
+            counterText: '',
+            hintText: hint,
+            hintStyle: TextStyle(
+              color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+              fontWeight: FontWeight.normal,
+            ),
+            prefixIcon: onPrefixIconTap != null
+                ? IconButton(
+                    icon: Icon(
+                      icon,
+                      color: hasError
+                          ? const Color(0xFFEF4444)
+                          : (isDark ? const Color(0xFF818CF8) : const Color(0xFF64748B)),
+                    ),
+                    tooltip: 'Open in Google Maps',
+                    onPressed: onPrefixIconTap,
+                  )
+                : Icon(
+                    icon,
+                    color: hasError
+                        ? const Color(0xFFEF4444)
+                        : (isDark ? const Color(0xFF818CF8) : const Color(0xFF64748B)),
+                  ),
+            suffixIcon: suffixIcon,
+            filled: true,
+            fillColor: hasError
+                ? (isDark ? const Color(0xFF450A0A).withValues(alpha: 0.3) : const Color(0xFFFEF2F2))
+                : (isDark ? const Color(0xFF1E293B) : Colors.white),
+            contentPadding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16.0),
+              borderSide: BorderSide(
+                color: hasError
+                    ? const Color(0xFFEF4444)
+                    : (isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1)),
+                width: hasError ? 1.5 : 1.0,
+              ),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16.0),
+              borderSide: BorderSide(
+                color: hasError
+                    ? const Color(0xFFEF4444)
+                    : (isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1)),
+                width: hasError ? 1.5 : 1.0,
+              ),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16.0),
+              borderSide: BorderSide(
+                color: hasError ? const Color(0xFFEF4444) : const Color(0xFF6366F1),
+                width: 2.0,
+              ),
+            ),
+          ),
+        ),
+        if (hasError) ...[
+          const SizedBox(height: 6),
+          Padding(
+            padding: const EdgeInsets.only(left: 4.0),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.error_outline_rounded,
+                  color: Color(0xFFEF4444),
+                  size: 15,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    errorText,
+                    style: const TextStyle(
+                      color: Color(0xFFEF4444),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        const SizedBox(height: 20),
+      ],
+    );
+  }
+
+  Widget _buildDatePickerTheme(BuildContext context, bool isDark, Widget? child) {
+    return Theme(
+      data: Theme.of(context).copyWith(
+        colorScheme: isDark
+            ? const ColorScheme.dark(
+                primary: Color(0xFF6366F1),
+                onPrimary: Colors.white,
+                surface: Color(0xFF1E293B),
+                onSurface: Colors.white,
+              )
+            : const ColorScheme.light(
+                primary: Color(0xFF6366F1),
+                onPrimary: Colors.white,
+                onSurface: Color(0xFF0F172A),
+              ),
+      ),
+      child: child!,
+    );
+  }
+
+  Future<void> _selectStartDate(BuildContext context) async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    final initialDate = (_startDate != null && !_startDate!.isBefore(today))
+        ? _startDate!
+        : today;
+
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: initialDate,
+      firstDate: today,
+      lastDate: DateTime(2101),
+      builder: (context, child) => _buildDatePickerTheme(context, isDark, child),
+    );
+
+    if (picked != null) {
+      setState(() {
+        _startDate = picked;
+        _startDateController.text = "${picked.day}/${picked.month}/${picked.year}";
+        _startDateError = null;
+        _stepWarningMessage = null;
+
+        // If existing end date is before new start date, clear it and prompt for update
+        if (_endDate != null && _endDate!.isBefore(picked)) {
+          _endDate = null;
+          _endDateController.clear();
+          _endDateError = 'Please select an end date on or after start date';
+        } else {
+          _endDateError = null;
+        }
+      });
+    }
+  }
+
+  Future<void> _selectEndDate(BuildContext context) async {
+    if (_startDate == null) {
+      setState(() {
+        _startDateError = 'Please select start date first';
+        _endDateError = 'Please select start date first';
+      });
+      return;
+    }
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final firstAllowedDate = DateTime(_startDate!.year, _startDate!.month, _startDate!.day);
+
+    final initialDate = (_endDate != null && !_endDate!.isBefore(firstAllowedDate))
+        ? _endDate!
+        : firstAllowedDate;
+
+    // Requirement 2: app should only allow users to select end date from the date of start and onwards only
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: initialDate,
+      firstDate: firstAllowedDate,
+      lastDate: DateTime(2101),
+      builder: (context, child) => _buildDatePickerTheme(context, isDark, child),
+    );
+
+    if (picked != null) {
+      setState(() {
+        _endDate = picked;
+        _endDateController.text = "${picked.day}/${picked.month}/${picked.year}";
+        _endDateError = null;
+        _stepWarningMessage = null;
+      });
+    }
+  }
+
+  Widget _buildTravelModeSelector(bool isDark) {
+    final modes = [
+      {'key': 'DRIVE', 'label': 'Drive', 'icon': Icons.directions_car_rounded},
+      {'key': 'TRANSIT', 'label': 'Transit', 'icon': Icons.directions_bus_rounded},
+      {'key': 'WALK', 'label': 'Walk', 'icon': Icons.directions_walk_rounded},
+      {'key': 'BIKE', 'label': 'Bike', 'icon': Icons.pedal_bike_rounded},
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Travel Mode',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+            color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: modes.map((m) {
+            final isSelected = _travelMode == m['key'];
+            return Expanded(
+              child: GestureDetector(
+                onTap: () {
+                  setState(() {
+                    _travelMode = m['key'] as String;
+                  });
+                  _fetchRouteForMap();
+                },
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? const Color(0xFF6366F1)
+                        : (isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9)),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: isSelected
+                          ? const Color(0xFF6366F1)
+                          : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                    ),
+                  ),
+                  child: Column(
+                    children: [
+                      Icon(
+                        m['icon'] as IconData,
+                        color: isSelected
+                            ? Colors.white
+                            : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B)),
+                        size: 20,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        m['label'] as String,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                          color: isSelected
+                              ? Colors.white
+                              : (isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 20),
+      ],
+    );
+  }
+
+  Future<void> _fetchRouteForMap() async {
+    final destText = _destinationController.text.trim();
+    if (destText.isEmpty) return;
+
+    LatLng? destPos;
+    final resolvedDest = KarnatakaPlacesRegistry.resolvePlace(destText);
+    if (resolvedDest != null) {
+      destPos = LatLng(resolvedDest.lat, resolvedDest.lng);
+      _selectedCityLat = resolvedDest.lat;
+      _selectedCityLng = resolvedDest.lng;
+    } else if (_selectedCityLat != null && _selectedCityLng != null) {
+      destPos = LatLng(_selectedCityLat!, _selectedCityLng!);
+    }
+    destPos ??= const LatLng(15.3350, 76.4600); // Default Karnataka/Hampi
+
+    LatLng? startPos;
+    final startText = _startPointController.text.trim();
+    if (startText.isNotEmpty) {
+      final resolved = KarnatakaPlacesRegistry.resolvePlace(startText);
+      if (resolved != null) {
+        startPos = LatLng(resolved.lat, resolved.lng);
+        _startLat = resolved.lat;
+        _startLng = resolved.lng;
+      }
+    }
+
+    if (startPos == null && _startLat != null && _startLng != null) {
+      startPos = LatLng(_startLat!, _startLng!);
+    } else if (startPos == null && startText.isNotEmpty) {
+      try {
+        final res = await TripApi.resolveAddressOrPlace(startText);
+        if (res != null) {
+          startPos = LatLng(res.lat, res.lng);
+          _startLat = res.lat;
+          _startLng = res.lng;
+        }
+      } catch (_) {}
+    }
+
+    if (startPos == null) {
+      try {
+        final pos = await Geolocator.getLastKnownPosition();
+        if (pos != null) {
+          startPos = LatLng(pos.latitude, pos.longitude);
+          _startLat = pos.latitude;
+          _startLng = pos.longitude;
+        }
+      } catch (_) {}
+    }
+
+    // If still null, check if start text contains mentions of cities/regions
+    if (startPos == null && startText.isNotEmpty) {
+      final norm = KarnatakaPlacesRegistry.normalizeRegionKey(startText);
+      if (norm.isNotEmpty) {
+        final resolvedNorm = KarnatakaPlacesRegistry.resolvePlace(norm);
+        if (resolvedNorm != null) {
+          startPos = LatLng(resolvedNorm.lat, resolvedNorm.lng);
+          _startLat = startPos.latitude;
+          _startLng = startPos.longitude;
+        }
+      }
+    }
+
+    // Fallback: Shivamogga / central Karnataka hub instead of Bengaluru
+    startPos ??= const LatLng(13.9299, 75.5681);
+
+    setState(() {
+      _isLoadingRoute = true;
+    });
+
+    try {
+      final result = await RoadRoutingService.getDrivingRoute(startPos, destPos);
+      if (!mounted) return;
+
+      final startLabel = startText.isNotEmpty ? startText.split(',').first.trim() : 'Present Location';
+      final destLabel = destText.isNotEmpty ? destText.split(',').first.trim() : 'Destination';
+
+      setState(() {
+        _isLoadingRoute = false;
+        _routePoints = result.points;
+        _routeDistanceText = result.distanceText ?? '${result.distanceKm.toStringAsFixed(1)} km';
+        _routeDurationText = result.durationText ?? _formatTravelDuration(result.duration);
+
+        _routeMarkers.clear();
+        _routeMarkers.add(
+          Marker(
+            markerId: const MarkerId('start'),
+            position: startPos!,
+            infoWindow: InfoWindow(title: startLabel),
+            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+          ),
+        );
+        _routeMarkers.add(
+          Marker(
+            markerId: const MarkerId('destination'),
+            position: destPos!,
+            infoWindow: InfoWindow(title: destLabel),
+            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+          ),
+        );
+
+        _routePolylines.clear();
+        _routePolylines.add(
+          Polyline(
+            polylineId: const PolylineId('route_preview'),
+            points: result.points,
+            color: const Color(0xFF4285F4),
+            width: 5,
+            jointType: JointType.round,
+            startCap: Cap.roundCap,
+            endCap: Cap.roundCap,
+          ),
+        );
+      });
+
+      _fitRouteMapBounds();
+    } catch (e) {
+      debugPrint('Error fetching route for map preview: $e');
+      if (mounted) {
+        setState(() {
+          _isLoadingRoute = false;
+        });
+      }
+    }
+  }
+
+  String _formatTravelDuration(Duration d) {
+    final hours = d.inHours;
+    final mins = d.inMinutes.remainder(60);
+    if (hours > 0) {
+      return '$hours hr $mins min';
+    }
+    return '$mins min';
+  }
+
+  void _fitRouteMapBounds() {
+    if (_routeMapController == null || _routePoints.isEmpty) return;
+    double minLat = 90.0, maxLat = -90.0, minLng = 180.0, maxLng = -180.0;
+    for (var p in _routePoints) {
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
+      if (p.longitude < minLng) minLng = p.longitude;
+      if (p.longitude > maxLng) maxLng = p.longitude;
+    }
+    _routeMapController!.animateCamera(
+      CameraUpdate.newLatLngBounds(
+        LatLngBounds(
+          southwest: LatLng(minLat, minLng),
+          northeast: LatLng(maxLat, maxLng),
+        ),
+        40,
+      ),
+    );
+  }
+
+  Widget _buildHalfPageRouteMap(bool isDark) {
+    final startName = _startPointController.text.trim().isNotEmpty
+        ? _startPointController.text.split(',').first.trim()
+        : 'Present Location';
+    final destName = _destinationController.text.trim().isNotEmpty
+        ? _destinationController.text.split(',').first.trim()
+        : 'Destination';
+
+    final initialCenter = _routePoints.isNotEmpty
+        ? _routePoints[_routePoints.length ~/ 2]
+        : ((_startLat != null && _startLng != null)
+            ? LatLng(_startLat!, _startLng!)
+            : ((_selectedCityLat != null && _selectedCityLng != null)
+                ? LatLng(_selectedCityLat!, _selectedCityLng!)
+                : const LatLng(13.9299, 75.5681)));
+
+    return Container(
+      width: double.infinity,
+      height: 240,
+      margin: const EdgeInsets.only(bottom: 20),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1E293B) : Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+          width: 1.2,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: isDark ? 0.35 : 0.08),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(19),
+        child: Stack(
+          children: [
+            GoogleMap(
+              initialCameraPosition: CameraPosition(
+                target: initialCenter,
+                zoom: 7.2,
+              ),
+              onMapCreated: (controller) {
+                _routeMapController = controller;
+                if (_routePoints.isNotEmpty) {
+                  _fitRouteMapBounds();
+                } else {
+                  _fetchRouteForMap();
+                }
+              },
+              markers: _routeMarkers,
+              polylines: _routePolylines,
+              zoomControlsEnabled: false,
+              myLocationButtonEnabled: false,
+              compassEnabled: false,
+              mapToolbarEnabled: false,
+              gestureRecognizers: {
+                Factory<OneSequenceGestureRecognizer>(() => EagerGestureRecognizer()),
+              },
+            ),
+
+            if (_isLoadingRoute)
+              Container(
+                color: Colors.black.withValues(alpha: 0.25),
+                child: const Center(
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    color: Color(0xFF6366F1),
+                  ),
+                ),
+              ),
+
+            // Top-left Route badge overlay
+            Positioned(
+              top: 12,
+              left: 12,
+              right: 12,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: (isDark ? const Color(0xFF0F172A) : Colors.white).withValues(alpha: 0.92),
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.15),
+                            blurRadius: 6,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.route_rounded, size: 16, color: Color(0xFF4285F4)),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              '$startName ➔ $destName',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: isDark ? Colors.white : const Color(0xFF0F172A),
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (_routeDurationText != null) ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF4285F4).withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                _routeDurationText!,
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF4285F4),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  InkWell(
+                    onTap: _openGoogleMapsSelection,
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: (isDark ? const Color(0xFF0F172A) : Colors.white).withValues(alpha: 0.92),
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.15),
+                            blurRadius: 6,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: const GoogleMapsIcon(size: 18),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Bottom subtle distance indicator
+            if (_routeDistanceText != null && !_isLoadingRoute)
+              Positioned(
+                bottom: 10,
+                right: 12,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: (isDark ? const Color(0xFF0F172A) : Colors.white).withValues(alpha: 0.88),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    '$_routeDistanceText driving route',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStep1(bool isDark) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (!_isHost) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF6366F1).withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.3),
+              ),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.info_outline_rounded, color: Color(0xFF6366F1), size: 20),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    'You joined as participant. Destination and dates are set by host.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF6366F1),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      _currentStep = 3;
+                    });
+                    if (_scrollController.hasClients) {
+                      _scrollController.jumpTo(0);
+                    }
+                  },
+                  icon: const Icon(Icons.arrow_forward_rounded, size: 14),
+                  label: const Text('Planning Room', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF6366F1),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+        Text(
+          'Trip Details',
+          style: TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            color: isDark ? Colors.white : const Color(0xFF0F172A),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'Set your destination and hotel stay to begin planning',
+          style: TextStyle(
+            fontSize: 13,
+            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+          ),
+        ),
+        const SizedBox(height: 24),
+        _buildTextField(
+          label: 'Trip Name',
+          hint: 'e.g. Karnataka Gateway Tour',
+          icon: Icons.bookmark_border_rounded,
+          controller: _tripNameController,
+          isDark: isDark,
+          textCapitalization: TextCapitalization.words,
+        ),
+        _buildTextField(
+          label: 'Destination City',
+          hint: 'Type city (e.g. Shimoga, Coorg, Hampi...)',
+          icon: Icons.location_on_outlined,
+          controller: _destinationController,
+          readOnly: !_isHost,
+          isDark: isDark,
+          errorText: _destinationError,
+          maxLength: 100,
+          textCapitalization: TextCapitalization.sentences,
+          onPrefixIconTap: _openGoogleMapsSelection,
+          suffixIcon: IconButton(
+            icon: const GoogleMapsIcon(size: 24),
+            tooltip: 'Select on Google Maps',
+            onPressed: _openGoogleMapsSelection,
+          ),
+          inputFormatters: [
+            LengthLimitingTextInputFormatter(100),
+            FirstLetterCapitalizationFormatter(),
+          ],
+          aboveFieldWidget: (_citySuggestions.isNotEmpty || _isSearchingCity)
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: modernWebSearchCityPadding(),
+                  children: [
+                    if (_isSearchingCity)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6, left: 4),
+                        child: Row(
+                          children: [
+                            const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF6366F1)),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Searching city suggestions...',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (_citySuggestions.isNotEmpty)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 4),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF1E293B) : Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: const Color(0xFF6366F1).withValues(alpha: 0.35),
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.08),
+                              blurRadius: 8,
+                              offset: const Offset(0, -2),
+                            ),
+                          ],
+                        ),
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 260),
+                          child: ListView.separated(
+                            shrinkWrap: true,
+                            padding: EdgeInsets.zero,
+                            itemCount: _citySuggestions.length,
+                            separatorBuilder: (context, index) => Divider(
+                              height: 1,
+                              thickness: 0.5,
+                              color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.08),
+                            ),
+                            itemBuilder: (context, index) {
+                              final sugg = _citySuggestions[index];
+                              return ListTile(
+                                dense: true,
+                                leading: const Icon(Icons.location_city_rounded, size: 18, color: Color(0xFF6366F1)),
+                                title: Text(
+                                  sugg.description,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: isDark ? Colors.white : const Color(0xFF0F172A),
+                                  ),
+                                ),
+                                onTap: () => _selectCitySuggestion(sugg),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                  ],
+                )
+              : null,
+          onChanged: (val) {
+            _onCityChanged(val);
+          },
+          onTap: () {
+            if (!_isHost) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Destination is chosen by the host and cannot be changed.'),
+                  backgroundColor: Colors.redAccent,
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+          },
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 0, bottom: 14, left: 4),
+          child: Row(
+            children: [
+              InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: _openGoogleMapsSelection,
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      GoogleMapsIcon(size: 16),
+                      SizedBox(width: 6),
+                      Text(
+                        'Select route & destination on Google Maps',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF4285F4),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        _buildTextField(
+          label: 'Hotel / Stay (Booked or Planning)',
+          hint: 'e.g. Royal Orchid Resort, Homestay, or pick on map',
+          icon: Icons.hotel_outlined,
+          controller: _hotelController,
+          isDark: isDark,
+          textCapitalization: TextCapitalization.words,
+          onChanged: _onHotelChanged,
+          onPrefixIconTap: _openHotelMapPicker,
+          onTap: () {
+            if (_hotelController.text.trim().isEmpty) {
+              _openHotelMapPicker();
+            }
+          },
+          suffixIcon: IconButton(
+            icon: const GoogleMapsIcon(size: 24),
+            tooltip: 'Choose on Google Maps',
+            onPressed: _openHotelMapPicker,
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 0, bottom: 14, left: 4),
+          child: Row(
+            children: [
+              OutlinedButton.icon(
+                onPressed: _openHotelMapPicker,
+                icon: const GoogleMapsIcon(size: 16),
+                label: const Text(
+                  'Choose Hotel on Google Maps',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF6366F1)),
+                ),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Color(0xFF6366F1), width: 1.2),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  minimumSize: const Size(0, 32),
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (_isSearchingHotel) ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12, left: 4),
+            child: Row(
+              children: [
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF6366F1)),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Searching hotel suggestions...',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (_hotelSuggestions.isNotEmpty) ...[
+          Container(
+            margin: const EdgeInsets.only(top: 0, bottom: 16),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.35),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.08),
+                  blurRadius: 8,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 260),
+              child: ListView.separated(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: _hotelSuggestions.length,
+                separatorBuilder: (context, index) => Divider(
+                  height: 1,
+                  thickness: 0.5,
+                  color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.08),
+                ),
+                itemBuilder: (context, index) {
+                  final sugg = _hotelSuggestions[index];
+                  return ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.hotel_rounded, size: 18, color: Color(0xFF6366F1)),
+                    title: Text(
+                      sugg.description,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: isDark ? Colors.white : const Color(0xFF0F172A),
+                      ),
+                    ),
+                    onTap: () async {
+                      final cleanName = sugg.description.split(',').first.trim();
+                      setState(() {
+                        _hotelController.text = cleanName;
+                        _hotelSuggestions = [];
+                        _isSearchingHotel = false;
+                      });
+                      try {
+                        final res = await TripApi.resolveCity(sugg.placeId);
+                        _hotelLat = res.lat;
+                        _hotelLng = res.lng;
+                      } catch (_) {}
+                    },
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
+        const SizedBox(height: 30),
+      ],
+    );
+  }
+
+  MainAxisSize modernWebSearchCityPadding() => MainAxisSize.min;
+
+  Widget _buildStepDates(bool isDark) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildHalfPageRouteMap(isDark),
+        Text(
+          'Dates & Travel',
+          style: TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            color: isDark ? Colors.white : const Color(0xFF0F172A),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'Select your travel dates, starting point and group details',
+          style: TextStyle(
+            fontSize: 13,
+            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+          ),
+        ),
+        const SizedBox(height: 24),
+        _buildTextField(
+          label: 'Start Date',
+          hint: 'Select start date',
+          icon: Icons.calendar_today_outlined,
+          controller: _startDateController,
+          readOnly: true,
+          isDark: isDark,
+          errorText: _startDateError,
+          onTap: () => _selectStartDate(context),
+        ),
+        _buildTextField(
+          label: 'End Date',
+          hint: 'Select end date (on or after start date)',
+          icon: Icons.calendar_today_outlined,
+          controller: _endDateController,
+          readOnly: true,
+          isDark: isDark,
+          errorText: _endDateError,
+          onTap: () => _selectEndDate(context),
+        ),
+        _buildTextField(
+          label: 'Starting Point',
+          hint: 'Your present location (e.g. Shivamogga, Bengaluru)',
+          icon: Icons.trip_origin_rounded,
+          controller: _startPointController,
+          isDark: isDark,
+          textCapitalization: TextCapitalization.words,
+          onChanged: _onStartPointChanged,
+          onSubmitted: (val) async {
+            final clean = val.trim();
+            if (clean.isEmpty) return;
+            final resolved = await TripApi.resolveAddressOrPlace(clean);
+            if (resolved != null && mounted) {
+              setState(() {
+                _startLat = resolved.lat;
+                _startLng = resolved.lng;
+              });
+              _fetchRouteForMap();
+            }
+          },
+          suffixIcon: _isFetchingLocation
+              ? const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF6366F1)),
+                  ),
+                )
+              : IconButton(
+                  icon: const Icon(Icons.my_location_rounded, color: Color(0xFF6366F1)),
+                  tooltip: 'Use Current Location',
+                  onPressed: _useCurrentLocation,
+                ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 0, bottom: 12, left: 4),
+          child: Row(
+            children: [
+              InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: _isFetchingLocation ? null : _useCurrentLocation,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.my_location_rounded, size: 14, color: Color(0xFF6366F1)),
+                      const SizedBox(width: 6),
+                      Text(
+                        _isFetchingLocation ? 'Detecting GPS location...' : 'Use current location',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF6366F1),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (_isSearchingStartPoint) ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12, left: 4),
+            child: Row(
+              children: [
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF6366F1)),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Searching starting point suggestions...',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (_startPointSuggestions.isNotEmpty) ...[
+          Container(
+            margin: const EdgeInsets.only(top: 0, bottom: 16),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.35),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.08),
+                  blurRadius: 8,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 260),
+              child: ListView.separated(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: _startPointSuggestions.length,
+                separatorBuilder: (context, index) => Divider(
+                  height: 1,
+                  thickness: 0.5,
+                  color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.08),
+                ),
+                itemBuilder: (context, index) {
+                  final sugg = _startPointSuggestions[index];
+                  return ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.location_on_rounded, size: 18, color: Color(0xFF6366F1)),
+                    title: Text(
+                      sugg.description,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: isDark ? Colors.white : const Color(0xFF0F172A),
+                      ),
+                    ),
+                    onTap: () async {
+                      final chosenDesc = sugg.description;
+                      setState(() {
+                        _startPointController.text = chosenDesc;
+                        _startPointSuggestions = [];
+                        _isSearchingStartPoint = false;
+                      });
+                      try {
+                        final res = await TripApi.resolveCity(sugg.placeId);
+                        _startLat = res.lat;
+                        _startLng = res.lng;
+                      } catch (_) {
+                        final local = KarnatakaPlacesRegistry.resolvePlace(chosenDesc);
+                        if (local != null) {
+                          _startLat = local.lat;
+                          _startLng = local.lng;
+                        }
+                      }
+                      _fetchRouteForMap();
+                    },
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
+        _buildTravelModeSelector(isDark),
+        _buildTextField(
+          label: 'Group Size',
+          hint: 'Number of people',
+          icon: Icons.group_outlined,
+          controller: _groupSizeController,
+          readOnly: !_isHost,
+          keyboardType: TextInputType.number,
+          isDark: isDark,
+          errorText: _groupSizeError,
+          onChanged: (val) {
+            if (_groupSizeError != null || _stepWarningMessage != null) {
+              setState(() {
+                _groupSizeError = null;
+                _stepWarningMessage = null;
+              });
+            }
+          },
+          onTap: () {
+            if (!_isHost) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Group size is managed by the host and cannot be changed.'),
+                  backgroundColor: Colors.redAccent,
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+          },
+        ),
+        const SizedBox(height: 30),
+      ],
+    );
+  }
+
+
+  IconData _getCategoryIconByName(String cat) {
+    switch (cat.toLowerCase()) {
+      case 'adventure':
+        return Icons.hiking_rounded;
+      case 'food':
+        return Icons.restaurant_rounded;
+      case 'nature':
+        return Icons.forest_rounded;
+      case 'culture':
+        return Icons.museum_rounded;
+      case 'sightseeing':
+        return Icons.photo_camera_rounded;
+      default:
+        return Icons.place_rounded;
+    }
+  }
+
+  Color _getCategoryColorByName(String cat) {
+    switch (cat.toLowerCase()) {
+      case 'adventure':
+        return const Color(0xFFF59E0B);
+      case 'food':
+        return const Color(0xFFF43F5E);
+      case 'nature':
+        return const Color(0xFF10B981);
+      case 'culture':
+        return const Color(0xFF8B5CF6);
+      case 'sightseeing':
+        return const Color(0xFF0EA5E9);
+      default:
+        return const Color(0xFF6366F1);
+    }
+  }
+
+  PlaceCard? _findPlaceCard(String placeName) {
+    if (_discoverData == null) return null;
+    final clean = placeName.toLowerCase().trim();
+    for (var p in _discoverData!.places) {
+      final pName = p.name.toLowerCase().trim();
+      if (pName == clean || p.placeId == clean || clean.contains(pName) || pName.contains(clean)) {
+        return p;
+      }
+    }
+    return null;
+  }
+
+  Widget _buildStep2(bool isDark) {
+    final suggestedPlaces = _suggestedPlaces;
+    final totalSelected = _selectedPlaces.length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_approvedMemberCount > 1 || !_isHost) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF6366F1).withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.25),
+              ),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.groups_rounded, color: Color(0xFF6366F1), size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Group Planning Room • $_approvedMemberCount active member${_approvedMemberCount > 1 ? 's' : ''}\nAll places selected by you and others are automatically blended into the shared plan.',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF6366F1),
+                      fontWeight: FontWeight.w600,
+                      height: 1.3,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Text(
+                'Places in ${_destinationController.text.isNotEmpty ? _destinationController.text : "your destination"}',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  color: isDark ? Colors.white : const Color(0xFF0F172A),
+                ),
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF6366F1).withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                '$totalSelected Selected',
+                style: const TextStyle(
+                  color: Color(0xFF6366F1),
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Places categorized across 5 experiences within 70 km. Select your preferred stops.',
+          style: TextStyle(
+            fontSize: 14,
+            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+          ),
+        ),
+        const SizedBox(height: 24),
+        if (_isLoadingPlaces)
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32.0),
+              child: Column(
+                children: [
+                  const CircularProgressIndicator(color: Color(0xFF6366F1)),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Discovering & categorizing places within 70 km...',
+                    style: TextStyle(
+                      color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )
+        else
+          ...suggestedPlaces.entries.map((category) {
+            final catName = category.key;
+            final catColor = _getCategoryColorByName(catName);
+            final catIcon = _getCategoryIconByName(catName);
+            final places = category.value;
+            final selectedInCat = places.where((p) => _selectedPlaces.contains(p)).length;
+
+            return Container(
+              margin: const EdgeInsets.only(bottom: 20),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF1E293B) : Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: selectedInCat > 0
+                      ? catColor.withValues(alpha: 0.6)
+                      : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                  width: selectedInCat > 0 ? 1.5 : 1,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.03),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Category Header
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: catColor.withValues(alpha: isDark ? 0.15 : 0.08),
+                      borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: catColor.withValues(alpha: 0.2),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(catIcon, size: 18, color: catColor),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            catName,
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: isDark ? Colors.white : const Color(0xFF0F172A),
+                            ),
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: isDark ? const Color(0xFF0F172A) : Colors.white,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: catColor.withValues(alpha: 0.3)),
+                          ),
+                          child: Text(
+                            '$selectedInCat/${places.length} picked',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: catColor,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Places List inside Category
+                  Padding(
+                    padding: const EdgeInsets.all(12.0),
+                    child: Column(
+                      children: places.map((place) {
+                        final isSelectedByMe = _selectedPlaces.contains(place);
+                        final isSelectedByGroup = _groupPlaces.contains(place);
+                        final card = _findPlaceCard(place);
+
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          decoration: BoxDecoration(
+                            color: isSelectedByMe
+                                ? catColor.withValues(alpha: isDark ? 0.2 : 0.06)
+                                : (isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC)),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: isSelectedByMe
+                                  ? catColor
+                                  : (isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                            ),
+                          ),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: () {
+                              setState(() {
+                                if (isSelectedByMe) {
+                                  _selectedPlaces.remove(place);
+                                } else {
+                                  _selectedPlaces.add(place);
+                                }
+                              });
+                              _syncPreferencesToFirestore();
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              child: Row(
+                                children: [
+                                  // Checkbox Indicator
+                                  Icon(
+                                    isSelectedByMe
+                                        ? Icons.check_circle_rounded
+                                        : Icons.radio_button_unchecked_rounded,
+                                    color: isSelectedByMe
+                                        ? catColor
+                                        : (isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8)),
+                                    size: 20,
+                                  ),
+                                  const SizedBox(width: 10),
+
+                                  // Place Info
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                place,
+                                                style: TextStyle(
+                                                  fontSize: 14,
+                                                  fontWeight: isSelectedByMe
+                                                      ? FontWeight.bold
+                                                      : FontWeight.w600,
+                                                  color: isDark ? Colors.white : const Color(0xFF0F172A),
+                                                ),
+                                              ),
+                                            ),
+                                            // Show "Group Pick" only when ≥1 OTHER member
+                                            // currently has this place selected.
+                                            if (isSelectedByGroup && !isSelectedByMe)
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                decoration: BoxDecoration(
+                                                  color: const Color(0xFF6366F1).withValues(alpha: 0.15),
+                                                  borderRadius: BorderRadius.circular(8),
+                                                ),
+                                                child: Text(
+                                                  _groupPickCounts[place] != null && _groupPickCounts[place]! > 1
+                                                      ? '👥 ${_groupPickCounts[place]} picked'
+                                                      : '👥 Group Pick',
+                                                  style: const TextStyle(
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: Color(0xFF6366F1),
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                        if (card != null) ...[
+                                          const SizedBox(height: 4),
+                                          Row(
+                                            children: [
+                                              if (card.rating > 0) ...[
+                                                const Icon(Icons.star_rounded, size: 14, color: Colors.amber),
+                                                const SizedBox(width: 2),
+                                                Text(
+                                                  card.rating.toStringAsFixed(1),
+                                                  style: const TextStyle(
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: Colors.amber,
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 8),
+                                              ],
+                                              if (card.distanceKm > 0) ...[
+                                                Icon(
+                                                  Icons.near_me_outlined,
+                                                  size: 13,
+                                                  color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                                ),
+                                                const SizedBox(width: 2),
+                                                Text(
+                                                  '${card.distanceKm.toStringAsFixed(1)} km away',
+                                                  style: TextStyle(
+                                                    fontSize: 11,
+                                                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  Widget _buildStep3(bool isDark) {
+    if (_isPlanningTrip) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 60.0, horizontal: 24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(22),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6366F1).withValues(alpha: 0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: const CircularProgressIndicator(
+                  strokeWidth: 3.5,
+                  color: Color(0xFF6366F1),
+                ),
+              ),
+              const SizedBox(height: 24),
+              Text(
+                'AI Agent Planning Your Itinerary...',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: isDark ? Colors.white : const Color(0xFF0F172A),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Calling get_place_details & compute_route tools to verify opening hours, optimize travel legs, and balance meals & visits.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                  height: 1.4,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Combine choices from everyone in the group and local selections into a unified set of strictly voted attractions
+    final allCombinedPlaces = <String>{..._groupPlaces, ..._selectedPlaces}
+        .where((p) {
+          final l = p.trim().toLowerCase();
+          return l.isNotEmpty &&
+              !l.startsWith('day ') &&
+              !l.startsWith('stop_') &&
+              !l.startsWith('local_') &&
+              !l.startsWith('start:') &&
+              l != 'starting point' &&
+              !l.startsWith('location (') &&
+              !l.startsWith('present location') &&
+              !l.contains('taralabalu') &&
+              !l.contains('layout rd') &&
+              !RegExp(r'^\s*\(?\s*-?\d+\.\d+').hasMatch(l) &&
+              !l.endsWith(' hotel') &&
+              !l.endsWith(' resort');
+        })
+        .toList();
+    if (allCombinedPlaces.isEmpty) {
+      final dest = _destinationController.text.trim();
+      final curated = KarnatakaPlacesRegistry.getCuratedAttractions(dest);
+      if (curated.isNotEmpty) {
+        allCombinedPlaces.addAll(curated.take(5).map((p) => p.name));
+      } else {
+        allCombinedPlaces.addAll([
+          if (dest.isNotEmpty) '$dest Landmark' else 'Historic Quarter',
+          if (dest.isNotEmpty) '$dest Nature Viewpoint' else 'Scenic Nature Reserve',
+          if (dest.isNotEmpty) '$dest Cultural Site' else 'Cultural Heritage Site',
+        ]);
+      }
+    }
+
+    final destName = _destinationController.text.trim();
+    final Map<String, Map<String, double>> placeCoordinatesMap = {};
+    if (_discoverData != null) {
+      for (var p in _discoverData!.places) {
+        if (p.lat != 0.0 || p.lng != 0.0) {
+          placeCoordinatesMap[p.name] = {
+            'lat': p.lat,
+            'lng': p.lng,
+          };
+        }
+      }
+    }
+    for (var place in allCombinedPlaces) {
+      if (!placeCoordinatesMap.containsKey(place)) {
+        final coord = KarnatakaPlacesRegistry.findPlaceCoordinate(place, destination: destName);
+        if (coord != null) {
+          placeCoordinatesMap[place] = {
+            'lat': coord.lat,
+            'lng': coord.lng,
+          };
+        }
+      }
+    }
+
+    final previewTrip = {
+      'id': _tripCode,
+      'tripCode': _tripCode,
+      'tripName': _tripNameController.text.trim().isNotEmpty
+          ? _tripNameController.text.trim()
+          : '${_destinationController.text.trim()} Trip',
+      'destination': _destinationController.text.trim().isNotEmpty
+          ? _destinationController.text.trim()
+          : 'Trip Destination',
+      'startDate': _startDateController.text.trim(),
+      'endDate': _endDateController.text.trim(),
+      'groupSize': _groupSizeController.text.trim().isNotEmpty
+          ? _groupSizeController.text.trim()
+          : '1',
+      'startPoint': _startPointController.text.trim(),
+      'startLat': _startLat,
+      'startLng': _startLng,
+      'hotel': _hotelController.text.trim(),
+      'hotelLat': _hotelLat,
+      'hotelLng': _hotelLng,
+      'travelMode': _travelMode,
+      'itineraryPlan': _itineraryPlan?.toJson(),
+      'places': allCombinedPlaces,
+      'placeCoordinates': placeCoordinatesMap,
+      'memberCount': _approvedMemberCount,
+    };
+
+    return TripDetailsScreen(
+      trip: previewTrip,
+      isEmbedded: true,
+      scrollController: _scrollController,
+      onTripUpdated: (updatedTrip) {
+        setState(() {
+          if (updatedTrip['places'] is List) {
+            final newPlaces = List<String>.from(updatedTrip['places']);
+            for (var p in newPlaces) {
+              if (!_selectedPlaces.contains(p) && !_groupPlaces.contains(p)) {
+                _selectedPlaces.add(p);
+              }
+            }
+          }
+          if (updatedTrip['itineraryPlan'] != null) {
+            try {
+              final planMap = Map<String, dynamic>.from(updatedTrip['itineraryPlan'] as Map);
+              _itineraryPlan = ItineraryPlan.fromJson(planMap);
+            } catch (_) {}
+          }
+        });
+      },
+    );
+  }
+
+
+
+
+
+
+  Widget _buildStep4(bool isDark) {
+    final dest = _destinationController.text.trim().isNotEmpty
+        ? _destinationController.text.trim()
+        : 'Karnataka';
+    final tripName = '$dest Expedition';
+    final sampleTripId = _tripCode;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Group Planning & QR Invite',
+          style: TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            color: isDark ? Colors.white : const Color(0xFF0F172A),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Invite friends to your trip using QR codes or by sharing your trip code.',
+          style: TextStyle(
+            fontSize: 14,
+            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+          ),
+        ),
+        const SizedBox(height: 24),
+
+        // Trip Info Card
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF1E293B) : Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.04),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF6366F1).withValues(alpha: 0.12),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.groups_rounded, color: Color(0xFF6366F1), size: 24),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          tripName,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: isDark ? Colors.white : const Color(0xFF0F172A),
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Group Size: ${_groupSizeController.text.trim().isNotEmpty ? _groupSizeController.text.trim() : '1'} People',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Trip Code: $sampleTripId',
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                          color: isDark ? const Color(0xFF818CF8) : const Color(0xFF4F46E5),
+                        ),
+                      ),
+                    ),
+                    InkWell(
+                      onTap: () {
+                        Clipboard.setData(ClipboardData(text: sampleTripId));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Trip code copied!'),
+                            backgroundColor: Color(0xFF6366F1),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      },
+                      child: const Icon(Icons.copy_rounded, size: 18, color: Color(0xFF6366F1)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 20),
+
+        // Action 1: Generate QR Code
+        _buildGroupActionCard(
+          isDark: isDark,
+          icon: Icons.qr_code_2_rounded,
+          iconColor: const Color(0xFF6366F1),
+          title: 'Generate Trip QR Code',
+          subtitle: 'Let friends scan your screen to join this group instantly',
+          buttonLabel: 'Show QR Code',
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => TripQrScreen(
+                  tripId: sampleTripId,
+                  tripName: tripName,
+                ),
+              ),
+            );
+          },
+        ),
+
+        const SizedBox(height: 36),
+      ],
+    );
+  }
+
+  Widget _buildGroupActionCard({
+    required bool isDark,
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String subtitle,
+    required String buttonLabel,
+    required VoidCallback onTap,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1E293B) : Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: iconColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, color: iconColor, size: 22),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: isDark ? Colors.white : const Color(0xFF0F172A),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            height: 42,
+            child: OutlinedButton(
+              onPressed: onTap,
+              style: OutlinedButton.styleFrom(
+                side: BorderSide(color: iconColor.withValues(alpha: 0.5)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                foregroundColor: iconColor,
+              ),
+              child: Text(buttonLabel, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStepDivider(bool isActive, bool isDark) {
+    return Expanded(
+      child: Container(
+        height: 32,
+        alignment: Alignment.center,
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+        child: Container(
+          height: 2.5,
+          decoration: BoxDecoration(
+            color: isActive
+                ? const Color(0xFF6366F1)
+                : (isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1)),
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStepper(bool isDark) {
+    if (_isHost) {
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildStepIndicator('Details', '1', _currentStep >= 1, isDark, 1),
+          _buildStepDivider(_currentStep >= 2, isDark),
+          _buildStepIndicator('Dates', '2', _currentStep >= 2, isDark, 2),
+          _buildStepDivider(_currentStep >= 3, isDark),
+          _buildStepIndicator('Group', '3', _currentStep >= 3, isDark, 3),
+          _buildStepDivider(_currentStep >= 4, isDark),
+          _buildStepIndicator('Places', '4', _currentStep >= 4, isDark, 4),
+          _buildStepDivider(_currentStep >= 5, isDark),
+          _buildStepIndicator('Plan', '5', _currentStep >= 5, isDark, 5),
+        ],
+      );
+    } else {
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildStepIndicator('Details', '1', _currentStep >= 1, isDark, 1),
+          _buildStepDivider(_currentStep >= 2, isDark),
+          _buildStepIndicator('Dates', '2', _currentStep >= 2, isDark, 2),
+          _buildStepDivider(_currentStep >= 3, isDark),
+          _buildStepIndicator('Places', '3', _currentStep >= 3, isDark, 3),
+          _buildStepDivider(_currentStep >= 4, isDark),
+          _buildStepIndicator('Plan', '4', _currentStep >= 4, isDark, 4),
+        ],
+      );
+    }
+  }
+
+  Widget _buildCurrentStep(bool isDark) {
+    if (_isHost) {
+      switch (_currentStep) {
+        case 1:
+          return _buildStep1(isDark);
+        case 2:
+          return _buildStepDates(isDark);
+        case 3:
+          return _buildStep4(isDark);
+        case 4:
+          return _buildStep2(isDark);
+        case 5:
+        default:
+          return _buildStep3(isDark);
+      }
+    } else {
+      switch (_currentStep) {
+        case 1:
+          return _buildStep1(isDark);
+        case 2:
+          return _buildStepDates(isDark);
+        case 3:
+          return _buildStep2(isDark);
+        case 4:
+        default:
+          return _buildStep3(isDark);
+      }
+    }
+  }
+
+
+  Future<void> _saveTrip() async {
+    _hasSavedTrip = true;
+    final prefs = await SharedPreferences.getInstance();
+    final user = FirebaseAuth.instance.currentUser;
+    final userEmail = user?.email?.trim().toLowerCase() ??
+        prefs.getString('user_profile_email')?.trim().toLowerCase() ?? '';
+    final storageKey = userEmail.isNotEmpty ? 'saved_trips_$userEmail' : 'saved_trips';
+    List<String> savedTrips = prefs.getStringList(storageKey) ?? [];
+    
+    final allCombinedPlaces = <String>{..._groupPlaces, ..._selectedPlaces}
+        .where((p) {
+          final l = p.trim().toLowerCase();
+          return l.isNotEmpty &&
+              !l.startsWith('day ') &&
+              !l.startsWith('stop_') &&
+              !l.startsWith('local_') &&
+              !l.startsWith('start:') &&
+              l != 'starting point' &&
+              !l.startsWith('location (') &&
+              !l.startsWith('present location') &&
+              !l.contains('taralabalu') &&
+              !l.contains('layout rd') &&
+              !RegExp(r'^\s*\(?\s*-?\d+\.\d+').hasMatch(l) &&
+              !l.endsWith(' hotel') &&
+              !l.endsWith(' resort');
+        })
+        .toList();
+    if (allCombinedPlaces.isEmpty) {
+      allCombinedPlaces.addAll(['Mountain Trek', 'Sunset Point', 'Historic Fort']);
+    }
+
+    final destName = _destinationController.text.trim();
+    final Map<String, Map<String, double>> placeCoordinatesMap = {};
+    if (_discoverData != null) {
+      for (var p in _discoverData!.places) {
+        if (p.lat != 0.0 || p.lng != 0.0) {
+          placeCoordinatesMap[p.name] = {
+            'lat': p.lat,
+            'lng': p.lng,
+          };
+        }
+      }
+    }
+    for (var place in allCombinedPlaces) {
+      if (!placeCoordinatesMap.containsKey(place)) {
+        final coord = KarnatakaPlacesRegistry.findPlaceCoordinate(place, destination: destName);
+        if (coord != null) {
+          placeCoordinatesMap[place] = {
+            'lat': coord.lat,
+            'lng': coord.lng,
+          };
+        }
+      }
+    }
+
+    final tripData = {
+      'id': DateTime.now().millisecondsSinceEpoch.toString(),
+      'tripCode': _tripCode,
+      'tripName': _tripNameController.text.trim().isNotEmpty
+          ? _tripNameController.text.trim()
+          : '${_destinationController.text.trim()} Trip',
+      'destination': _destinationController.text.trim(),
+      'startDate': _startDateController.text.trim(),
+      'endDate': _endDateController.text.trim(),
+      'groupSize': _groupSizeController.text.trim(),
+      'startPoint': _startPointController.text.trim(),
+      'startLat': _startLat,
+      'startLng': _startLng,
+      'hotel': _hotelController.text.trim(),
+      'hotelLat': _hotelLat,
+      'hotelLng': _hotelLng,
+      'travelMode': _travelMode,
+      'itineraryPlan': _itineraryPlan?.toJson(),
+      'initialPlan': _itineraryPlan?.toJson(),
+      'places': allCombinedPlaces,
+      'placeCoordinates': placeCoordinatesMap,
+      'memberCount': _approvedMemberCount,
+      'isHost': _isHost,
+      'isSaved': true,
+      'status': 'completed',
+      'hostUid': FirebaseAuth.instance.currentUser?.uid,
+      'userEmail': userEmail,
+      'creatorEmail': userEmail,
+    };
+    
+    savedTrips.removeWhere((item) {
+      try {
+        final decoded = jsonDecode(item);
+        return decoded['tripCode'] == _tripCode;
+      } catch (_) {
+        return false;
+      }
+    });
+
+    savedTrips.add(jsonEncode(tripData));
+    await prefs.setStringList(storageKey, savedTrips);
+
+    // If saving under a user key, clean up any previous instance from generic list
+    if (userEmail.isNotEmpty) {
+      final genericTrips = prefs.getStringList('saved_trips');
+      if (genericTrips != null) {
+        final updatedGeneric = genericTrips.where((item) {
+          try {
+            final decoded = jsonDecode(item);
+            return decoded['tripCode'] != _tripCode;
+          } catch (_) {
+            return true;
+          }
+        }).toList();
+        await prefs.setStringList('saved_trips', updatedGeneric);
+      }
+    }
+    
+    try {
+      await FirebaseFirestore.instance.collection('trips').doc(_tripCode).set({
+        'tripName': _tripNameController.text.trim().isNotEmpty
+            ? _tripNameController.text.trim()
+            : '${_destinationController.text.trim()} Trip',
+        'destination': _destinationController.text.trim(),
+        'startDate': _startDateController.text.trim(),
+        'endDate': _endDateController.text.trim(),
+        'groupSize': _groupSizeController.text.trim(),
+        'startPoint': _startPointController.text.trim(),
+        'startLat': _startLat,
+        'startLng': _startLng,
+        'hotel': _hotelController.text.trim(),
+        'hotelLat': _hotelLat,
+        'hotelLng': _hotelLng,
+        'travelMode': _travelMode,
+        'itineraryPlan': _itineraryPlan?.toJson(),
+        'initialPlan': _itineraryPlan?.toJson(),
+        'places': allCombinedPlaces,
+        'placeCoordinates': placeCoordinatesMap,
+        'memberCount': _approvedMemberCount,
+        'isSaved': true,
+        'status': 'completed',
+        'hostUid': FirebaseAuth.instance.currentUser?.uid,
+        'userEmail': userEmail,
+        'creatorEmail': userEmail,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (_) {}
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_isHost ? 'Trip Saved Successfully!' : 'Trip Plan Saved to My Trips!'),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => TripDetailsScreen(
+            trip: tripData,
+            onDelete: () async {
+              try {
+                final prefs = await SharedPreferences.getInstance();
+                final storageKey = userEmail.isNotEmpty ? 'saved_trips_$userEmail' : 'saved_trips';
+                List<String> savedTrips = prefs.getStringList(storageKey) ?? [];
+                savedTrips.removeWhere((item) {
+                  try {
+                    final decoded = jsonDecode(item);
+                    return decoded['tripCode'] == _tripCode;
+                  } catch (_) {
+                    return false;
+                  }
+                });
+                await prefs.setStringList(storageKey, savedTrips);
+                await FirebaseFirestore.instance.collection('trips').doc(_tripCode).delete();
+              } catch (_) {}
             },
           ),
         ),
-        body: TabBarView(
+      );
+    }
+  }
+
+  void _showTripQrModal(BuildContext context, bool isDark) {
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogCtx) => TripQrModalDialog(
+        tripCode: _tripCode,
+        tripName: _tripNameController.text.trim().isNotEmpty
+            ? _tripNameController.text.trim()
+            : (_destinationController.text.trim().isNotEmpty
+                ? '${_destinationController.text.trim()} Trip'
+                : 'Trip Plan'),
+        isDark: isDark,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final int maxSteps = _isHost ? 5 : 4;
+    final bool isLastStep = _currentStep == maxSteps;
+
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        if (_currentStep > 1) {
+          setState(() {
+            _currentStep--;
+          });
+          if (_scrollController.hasClients) {
+            _scrollController.jumpTo(0);
+          }
+        } else {
+          await _handleExitWithoutSaving();
+          if (context.mounted) {
+            Navigator.pop(context);
+          }
+        }
+      },
+      child: Scaffold(
+        backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+        appBar: AppBar(
+          backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+          elevation: 0,
+          leading: IconButton(
+            icon: Icon(
+              Icons.arrow_back_ios_new_rounded,
+              color: isDark ? Colors.white : const Color(0xFF0F172A),
+              size: 20,
+            ),
+            onPressed: () async {
+              if (_currentStep > 1) {
+                setState(() {
+                  _currentStep--;
+                });
+                if (_scrollController.hasClients) {
+                  _scrollController.jumpTo(0);
+                }
+              } else {
+                await _handleExitWithoutSaving();
+                if (!context.mounted) return;
+                Navigator.pop(context);
+              }
+            },
+          ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            const TripDetailsScreen(),
-            Center(
-              child: Text('Group Tab - Index $_currentTabIndex'),
+            Text(
+              _isHost ? 'Create Trip' : 'Trip Planning Room',
+              style: TextStyle(
+                color: isDark ? Colors.white : const Color(0xFF0F172A),
+                fontSize: 19,
+                fontWeight: FontWeight.w800,
+              ),
             ),
-            Center(
-              child: Text('Preferences Tab - Index $_currentTabIndex'),
+            if (!_isHost)
+              Text(
+                'Participant Mode • $_tripCode',
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: Color(0xFF6366F1),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+          ],
+        ),
+        centerTitle: false,
+        actions: [
+          // Add member icon visible ONLY for Host and ONLY on sections 3, 4, 5 (all except first 2: Details, Dates)
+          if (_isHost && _currentStep >= 3)
+            Padding(
+              padding: const EdgeInsets.only(right: 8.0),
+              child: IconButton(
+                tooltip: 'Add Member / Trip QR',
+                icon: Image.asset(
+                  'assets/images/add_member_icon.png',
+                  width: 24,
+                  height: 24,
+                  color: isDark ? Colors.white : const Color(0xFF0F172A),
+                  errorBuilder: (context, error, stackTrace) => Icon(
+                    Icons.person_add_alt_1_rounded,
+                    color: isDark ? Colors.white : const Color(0xFF0F172A),
+                    size: 24,
+                  ),
+                ),
+                onPressed: () => _showTripQrModal(context, isDark),
+              ),
             ),
-            Center(
-              child: Text('Show Trip Tab - Index $_currentTabIndex'),
+        ],
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Expanded(
+              child: SingleChildScrollView(
+                controller: _scrollController,
+                padding: isLastStep ? EdgeInsets.zero : const EdgeInsets.all(24.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Stepper
+                    Padding(
+                      padding: isLastStep
+                          ? const EdgeInsets.fromLTRB(24, 16, 24, 16)
+                          : EdgeInsets.zero,
+                      child: _buildStepper(isDark),
+                    ),
+                    if (_stepWarningMessage != null) ...[
+                      const SizedBox(height: 16),
+                      Padding(
+                        padding: isLastStep
+                            ? const EdgeInsets.symmetric(horizontal: 24)
+                            : EdgeInsets.zero,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEF4444).withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFFEF4444).withValues(alpha: 0.35)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.warning_amber_rounded, color: Color(0xFFEF4444), size: 20),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  _stepWarningMessage!,
+                                  style: const TextStyle(
+                                    color: Color(0xFFEF4444),
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              GestureDetector(
+                                onTap: () => setState(() => _stepWarningMessage = null),
+                                child: const Icon(Icons.close_rounded, color: Color(0xFFEF4444), size: 16),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                    if (!isLastStep) SizedBox(height: _stepWarningMessage != null ? 16 : 32),
+
+                    _buildCurrentStep(isDark),
+                  ],
+                ),
+              ),
+            ),
+            
+            // Next Button
+            Container(
+              padding: const EdgeInsets.all(24.0),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF1E293B) : Colors.white,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.05),
+                    blurRadius: 10,
+                    offset: const Offset(0, -4),
+                  ),
+                ],
+              ),
+              child: SizedBox(
+                width: double.infinity,
+                height: 56,
+                child: ElevatedButton(
+                  onPressed: () async {
+                    if (_currentStep < maxSteps) {
+                      if (_currentStep == 1) {
+                        if (!_validateStep1(showWarning: true)) {
+                          return;
+                        }
+
+                        _fetchPlacesViaBackend(_destinationController.text.trim());
+                        await _syncTripToFirestore();
+                      } else if (_currentStep == 2) {
+                        if (!_validateStepDates(showWarning: false)) {
+                          return;
+                        }
+                        await _syncTripToFirestore();
+                      } else if ((_isHost && _currentStep == 4) || (!_isHost && _currentStep == 3)) {
+                        await _syncPreferencesToFirestore();
+                        // Step 7: Generate AI Daily Itinerary with Routes and Opening hours
+                        _generateItineraryViaBackend();
+                      }
+                      setState(() {
+                        _stepWarningMessage = null;
+                        _currentStep++;
+                        if (_currentStep > _maxStepReached) {
+                          _maxStepReached = _currentStep;
+                        }
+                      });
+                      if (_scrollController.hasClients) {
+                        _scrollController.jumpTo(0);
+                      }
+                    } else {
+                      await _saveTrip();
+                    }
+                  },
+
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF6366F1),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        isLastStep ? 'Save Trip' : 'Next',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Icon(
+                        isLastStep ? Icons.check : Icons.arrow_forward, 
+                        color: Colors.white, 
+                        size: 20,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+}
+
+class TripQrModalDialog extends StatefulWidget {
+  final String tripCode;
+  final String tripName;
+  final bool isDark;
+
+  const TripQrModalDialog({
+    super.key,
+    required this.tripCode,
+    required this.tripName,
+    required this.isDark,
+  });
+
+  @override
+  State<TripQrModalDialog> createState() => _TripQrModalDialogState();
+}
+
+class _TripQrModalDialogState extends State<TripQrModalDialog> {
+  final GlobalKey _qrCardKey = GlobalKey();
+  bool _isSharing = false;
+
+  Future<void> _shareQrCode() async {
+    if (_isSharing) return;
+    setState(() => _isSharing = true);
+
+    try {
+      // Ensure repainting has completed
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      final boundary = _qrCardKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) {
+        throw Exception('Could not locate QR card boundary.');
+      }
+
+      final ui.Image image = await boundary.toImage(pixelRatio: 3.0);
+      final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      if (byteData == null) {
+        throw Exception('Failed to obtain image data.');
+      }
+
+      final img.Image convertedImage = img.Image.fromBytes(
+        width: image.width,
+        height: image.height,
+        bytes: byteData.buffer,
+        order: img.ChannelOrder.rgba,
+      );
+
+      final List<int> jpegBytes = img.encodeJpg(convertedImage, quality: 95);
+
+      final tempDir = await getTemporaryDirectory();
+      final filePath = '${tempDir.path}/trip_qr_${widget.tripCode}.jpeg';
+      final file = File(filePath);
+      await file.writeAsBytes(jpegBytes, flush: true);
+
+      final xFile = XFile(
+        file.path,
+        mimeType: 'image/jpeg',
+        name: 'trip_qr_${widget.tripCode}.jpeg',
+      );
+
+      final tripDisplayName = widget.tripName.trim().isNotEmpty ? widget.tripName.trim() : 'Trip Plan';
+
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [xFile],
+          text:
+              'Join my trip "$tripDisplayName" on NextTripia!\nTrip Code: ${widget.tripCode}\nLink: nexttripia://trip/join?code=${widget.tripCode}',
+          subject: 'Trip Invite: $tripDisplayName',
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error sharing QR Code: $e'),
+            backgroundColor: const Color(0xFFEF4444),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSharing = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final qrPayload = 'nexttripia://trip/join?code=${widget.tripCode}';
+    final cardBg = widget.isDark ? const Color(0xFF1E293B) : Colors.white;
+    final textColor = widget.isDark ? Colors.white : const Color(0xFF0F172A);
+    final subtextColor = widget.isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B);
+
+    return Dialog(
+      backgroundColor: cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 22),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Top Row: Title + Close Icon
+            Row(
+              children: [
+                Container(
+                  width: 36,
+                  height: 36,
+                  padding: const EdgeInsets.all(7),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF6366F1).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Image.asset(
+                    'assets/images/add_member_icon.png',
+                    color: const Color(0xFF6366F1),
+                    errorBuilder: (context, error, stackTrace) => const Icon(
+                      Icons.person_add_alt_1_rounded,
+                      color: Color(0xFF6366F1),
+                      size: 20,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Invite Members',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                          color: textColor,
+                        ),
+                      ),
+                      Text(
+                        widget.tripName.trim().isNotEmpty ? widget.tripName.trim() : 'Trip Planning',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: subtextColor,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: Icon(Icons.close_rounded, color: subtextColor, size: 22),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  splashRadius: 18,
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+
+            // Instruction subtitle
+            Text(
+              'Share or let members scan this QR code to join directly into the planning room.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 12.5,
+                color: subtextColor,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // RepaintBoundary wrapping the QR card for high-resolution JPEG sharing
+            RepaintBoundary(
+              key: _qrCardKey,
+              child: Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: const Color(0xFFE2E8F0)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.06),
+                      blurRadius: 16,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const AppLogo(
+                      size: 22,
+                      showText: true,
+                      text: 'NextTripia AI',
+                      fontSize: 15,
+                      textColor: Color(0xFF0F172A),
+                    ),
+                    const SizedBox(height: 12),
+                    QrImageView(
+                      data: qrPayload,
+                      version: QrVersions.auto,
+                      size: 210,
+                      backgroundColor: Colors.white,
+                      eyeStyle: const QrEyeStyle(
+                        eyeShape: QrEyeShape.square,
+                        color: Color(0xFF0F172A),
+                      ),
+                      dataModuleStyle: const QrDataModuleStyle(
+                        dataModuleShape: QrDataModuleShape.square,
+                        color: Color(0xFF0F172A),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF1F5F9),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      child: Text(
+                        'TRIP CODE: ${widget.tripCode}',
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1.2,
+                          color: Color(0xFF334155),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+
+            // Option under QR code: Share in JPEG form through other mobile apps
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: ElevatedButton.icon(
+                onPressed: _isSharing ? null : _shareQrCode,
+                icon: _isSharing
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                        ),
+                      )
+                    : const Icon(Icons.share_rounded, size: 20),
+                label: Text(
+                  _isSharing ? 'Generating JPEG...' : 'Share QR as JPEG',
+                  style: const TextStyle(
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF6366F1),
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            // Tap to Copy Code
+            TextButton.icon(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: widget.tripCode));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Trip code "${widget.tripCode}" copied to clipboard!'),
+                    backgroundColor: const Color(0xFF10B981),
+                    behavior: SnackBarBehavior.floating,
+                    duration: const Duration(seconds: 2),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.copy_rounded, size: 15, color: Color(0xFF6366F1)),
+              label: const Text(
+                'Copy Trip Code',
+                style: TextStyle(
+                  color: Color(0xFF6366F1),
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                ),
+              ),
             ),
           ],
         ),
@@ -56,3 +4460,4 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
     );
   }
 }
+

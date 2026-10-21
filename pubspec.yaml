@@ -1,27 +1,54 @@
-name: nexttripia
-description: "NextTripia AI - Your travel companion"
+name: nexti_project
+description: "A new Flutter project."
 publish_to: 'none'
 
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+  sdk: ^3.11.4
 
 dependencies:
   flutter:
     sdk: flutter
-  
-  cupertino_icons: ^1.0.2
+
+  # UI & Icons
+  cupertino_icons: ^1.0.8
+
+  # Device & Media
+  image_picker: ^1.2.3
+  path_provider: ^2.1.6
+  image: ^4.10.1
+  share_plus: ^13.3.0
+
+  # Local Storage & Networking
+  shared_preferences: ^2.5.5
+  http: ^1.6.0
   google_maps_flutter: ^2.18.1
+
+  # Firebase Suite
+  firebase_core: ^4.15.0
+  firebase_auth: ^6.7.0
+  cloud_firestore: ^6.10.0
+  firebase_database: ^12.1.4     # For accurate Realtime Database online/offline presence
+  google_sign_in: ^6.2.2
+
+  # QR Code & Deep Linking
+  qr_flutter: ^4.1.0            # Generates trip QR codes
+  mobile_scanner: ^7.4.2        # In-app camera scanner
+  app_links: ^6.3.3             # Intercepts native camera & external deep links
   geolocator: ^14.1.1
   geocoding: ^5.0.0
-  location: ^5.0.0
+  location: ^5.0.1              # For getting device location with permissions
+  url_launcher: ^6.3.3
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-
-  flutter_lints: ^2.0.0
+  flutter_lints: ^6.0.0
 
 flutter:
   uses-material-design: true
+
+  assets:
+    - assets/images/
+    - assets/images/travel_bg.jpeg
