@@ -361,6 +361,8 @@ class _TripsScreenState extends State<TripsScreen> {
         title: Text(
           'My Trips',
           style: TextStyle(
+
+            
             fontWeight: FontWeight.bold,
             color: isDark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A),
           ),
@@ -395,7 +397,7 @@ class _TripsScreenState extends State<TripsScreen> {
                     (hostUid.isNotEmpty && hostUid == currentUid) ||
                     (hostEmail.isNotEmpty && _userEmail.isNotEmpty && hostEmail == _userEmail);
 
-                return Card(
+                return Card(     //outline box of planned trip
                   margin: const EdgeInsets.only(bottom: 16),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(16),

@@ -7,8 +7,8 @@ Exposes HTTP endpoints specified in the Trip AI Development Plan:
 4. POST /plan                - Runs ADK details and route tools; validates the result and returns daily schedules.
 """
 
-import os
-import re
+import os     
+import re      
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import requests
