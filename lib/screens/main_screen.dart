@@ -78,7 +78,7 @@ class _MainScreenState extends State<MainScreen> {
           SystemNavigator.pop();
         }
       },
-      child: Scaffold(
+      child: Scaffold(    //basic page layout
         backgroundColor: Theme.of(context).scaffoldBackgroundColor,
         body: IndexedStack(
           index: _selectedIndex,

@@ -51,4 +51,5 @@ flutter:
 
   assets:
     - assets/images/
+    - assets/images/app_icon.png
     - assets/images/travel_bg.jpeg
